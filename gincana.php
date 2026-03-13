@@ -1,311 +1,279 @@
 <?php
 /**
- * SISTEMA GINCANA JMM - VERSÃO ULTRA AGILIZADA
- * Módulos: Chamada com Popup de Cadastro e Filtro de Membros
+ * JMM SYSTEM - GESTÃO INTEGRADA MASTER FINAL
+ * Módulos: Chamada, Cabo de Guerra, Prova, Jovens, Ata e Ranking.
  */
-
 require_once 'config.php';
 
-// 1. SEGURANÇA: Verifica se está logado
-if (!isset($_SESSION['user_id'])) {
-    header("Location: login.php");
-    exit;
+if (!isset($_SESSION['user_id'])) { header("Location: login.php"); exit; }
+
+$user_id = $_SESSION['user_id'];
+$user_nivel = $_SESSION['nivel'];
+
+// --- 1. CONFIGURAÇÃO DO ENCONTRO ATIVO ---
+$enc_ativo = $pdo->query("SELECT * FROM encontros WHERE ativo = 1 LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+$enc_id_ativo = $enc_ativo['id'] ?? 0;
+
+// --- 2. TOTAIS PARA OS BADGES ---
+$total_cadastrados = $pdo->query("SELECT COUNT(*) FROM jovens")->fetchColumn();
+$total_presentes_hoje = 0;
+if ($enc_id_ativo) {
+    $total_presentes_hoje = $pdo->query("SELECT COUNT(*) FROM presencas WHERE encontro_id = $enc_id_ativo")->fetchColumn();
 }
 
-// 2. CONFIGURAÇÕES DE PAGINAÇÃO E FILTRO (ABA JOVENS)
-$itens_por_pág = 10;
-$pagina_atual = isset($_GET['p']) ? (int)$_GET['p'] : 1;
-if ($pagina_atual < 1) $pagina_atual = 1;
-$offset = ($pagina_atual - 1) * $itens_por_pág;
+// --- 3. LÓGICA DE PAGINAÇÃO E FILTRO (ABA JOVENS) ---
+$itens_por_pag = 10;
+$p_atual = isset($_GET['p']) ? (int)$_GET['p'] : 1;
+if ($p_atual < 1) $p_atual = 1;
+$offset = ($p_atual - 1) * $itens_por_pag;
 
-// Lógica de Filtro na Aba Jovens
-$filtro_jovem = isset($_GET['f_jovem']) ? trim($_GET['f_jovem']) : '';
-$params_filtro = [];
-$where_filtro = "WHERE 1=1";
-
-if ($filtro_jovem) {
-    $where_filtro .= " AND (nome LIKE ? OR telefone LIKE ?)";
-    $params_filtro[] = "%$filtro_jovem%";
-    $params_filtro[] = "%$filtro_jovem%";
+$f_j = isset($_GET['f_jovem']) ? trim($_GET['f_jovem']) : '';
+$where_j = "WHERE 1=1";
+$params_j = [];
+if ($f_j) { 
+    $where_j .= " AND (nome LIKE ? OR telefone LIKE ?)"; 
+    $params_j[] = "%$f_j%"; $params_j[] = "%$f_j%"; 
 }
 
-// 3. PROCESSAMENTO DE AÇÕES (POST)
+// --- 4. PROCESSAMENTO DE AÇÕES (POST) ---
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     $acao = $_POST['form_acao'] ?? '';
     $aba_retorno = $_POST['aba_destino'] ?? 'chamada';
 
-    // Ação: Novo Jovem (Cadastro Manual na aba Jovens)
-    if ($acao == 'novo_jovem') {
-        $nome = trim($_POST['nome']);
-        $tel = trim($_POST['telefone']);
-        $ano = (int)$_POST['ano_nascimento'];
-        $data_nasc = !empty($_POST['data_nascimento']) ? $_POST['data_nascimento'] : null;
-
-        $stmt = $pdo->prepare("INSERT INTO jovens (nome, telefone, ano_nascimento, data_nascimento) VALUES (?, ?, ?, ?)");
-        $stmt->execute([$nome, $tel, $ano, $data_nasc]);
-        registrarLog($pdo, "Cadastrou jovem: $nome", "Jovens");
-    }
-
-    // Ação: Deletar Jovem
-    if ($acao == 'deletar_jovem') {
-        $id_j = (int)$_POST['id_jovem'];
-        $pdo->prepare("DELETE FROM jovens WHERE id = ?")->execute([$id_j]);
-        registrarLog($pdo, "Excluiu jovem ID: $id_j", "Jovens");
-    }
-
-    // --- MÓDULO ENCONTROS ---
+    // Gestão de Encontros
     if ($acao == 'novo_encontro') {
-        $stmt = $pdo->prepare("INSERT INTO encontros (data_encontro, local_encontro, tema, status) VALUES (?, ?, ?, 'aberto')");
-        $stmt->execute([$_POST['data_e'], $_POST['local_e'], $_POST['tema_e']]);
-        registrarLog($pdo, "Criou encontro: " . $_POST['tema_e'], "Chamada");
+        $pdo->prepare("INSERT INTO encontros (data_encontro, local_encontro, tema, ativo) VALUES (?, ?, ?, 0)")
+            ->execute([$_POST['data_e'], $_POST['local_e'], $_POST['tema_e']]);
     }
-
+    if ($acao == 'ativar_encontro') {
+        $pdo->exec("UPDATE encontros SET ativo = 0");
+        $pdo->prepare("UPDATE encontros SET ativo = 1 WHERE id = ?")->execute([$_POST['e_id']]);
+    }
     if ($acao == 'excluir_encontro') {
-        $id_e = (int)$_POST['e_id'];
-        $pdo->prepare("DELETE FROM presencas WHERE encontro_id = ?")->execute([$id_e]);
-        $pdo->prepare("DELETE FROM encontros WHERE id = ?")->execute([$id_e]);
+        $pdo->prepare("DELETE FROM presencas WHERE encontro_id = ?")->execute([$_POST['e_id']]);
+        $pdo->prepare("DELETE FROM encontros WHERE id = ?")->execute([$_POST['e_id']]);
     }
-
+    if ($acao == 'salvar_ata') {
+        $pdo->prepare("UPDATE encontros SET ata = ? WHERE ativo = 1")->execute([$_POST['texto_ata']]);
+    }
     if ($acao == 'remover_presenca') {
         $pdo->prepare("DELETE FROM presencas WHERE jovem_id = ? AND encontro_id = ?")->execute([$_POST['j_id'], $_POST['e_id']]);
     }
 
-    // --- MÓDULO EQUIPES ---
-    if ($acao == 'novo_grupo') { 
-        $pdo->prepare("INSERT INTO grupos (nome_time) VALUES (?)")->execute([$_POST['nome_time']]); 
+    // Gestão de Jovens
+    if ($acao == 'novo_jovem') {
+        $pdo->prepare("INSERT INTO jovens (nome, telefone, ano_nascimento, data_nascimento) VALUES (?, ?, ?, ?)")
+            ->execute([trim($_POST['nome']), trim($_POST['telefone']), (int)$_POST['ano_nascimento'], $_POST['data_nascimento'] ?: null]);
     }
-    if ($acao == 'editar_time') { 
-        $pdo->prepare("UPDATE grupos SET nome_time = ? WHERE id = ?")->execute([$_POST['nome_time'], $_POST['id_time']]); 
-    }
-    if ($acao == 'deletar_time') { 
-        $id_t = (int)$_POST['id_time'];
-        $pdo->prepare("DELETE FROM registros WHERE grupo_id = ?")->execute([$id_t]); 
-        $pdo->prepare("DELETE FROM membros WHERE grupo_id = ?")->execute([$id_t]); 
-        $pdo->prepare("DELETE FROM grupos WHERE id = ?")->execute([$id_t]); 
-    }
-    if ($acao == 'add_membro') { 
-        $pdo->prepare("INSERT INTO membros (grupo_id, nome) VALUES (?, ?)")->execute([$_POST['id_time'], $_POST['nome_membro']]); 
-    }
-    if ($acao == 'deletar_membro') { 
-        $pdo->prepare("DELETE FROM membros WHERE id = ?")->execute([$_POST['id_membro']]); 
+    if ($acao == 'deletar_jovem') {
+        $pdo->prepare("DELETE FROM jovens WHERE id = ?")->execute([$_POST['id_jovem']]);
     }
 
-    // --- MÓDULO GINCANA ---
+    // Equipes Gincana
+    if ($acao == 'novo_grupo') { $pdo->prepare("INSERT INTO grupos (nome_time) VALUES (?)")->execute([$_POST['nome_time']]); }
+    if ($acao == 'editar_equipe_gincana') { $pdo->prepare("UPDATE grupos SET nome_time = ? WHERE id = ?")->execute([$_POST['nome_time'], $_POST['id_time']]); }
+    if ($acao == 'deletar_equipe_gincana') { $pdo->prepare("DELETE FROM grupos WHERE id = ?")->execute([$_POST['id_time']]); }
+
+    // Cabo de Guerra
+    if ($acao == 'novo_time_cg') {
+        $pdo->prepare("INSERT INTO cg_times (nome_santo, capitao_id, pontos) VALUES (?, ?, 0)")->execute([$_POST['nome_santo'], $_POST['capitao_id'] ?: null]);
+    }
+    if ($acao == 'editar_time_cg') {
+        $pdo->prepare("UPDATE cg_times SET nome_santo = ?, capitao_id = ? WHERE id = ?")->execute([$_POST['nome_santo'], $_POST['capitao_id'], $_POST['time_id']]);
+    }
+    if ($acao == 'excluir_time_cg') { $pdo->prepare("DELETE FROM cg_times WHERE id = ?")->execute([$_POST['time_id']]); }
+    if ($acao == 'gerar_batalhas') {
+        $pdo->exec("DELETE FROM cg_disputas WHERE status = 'pendente'");
+        $times = $pdo->query("SELECT id FROM cg_times")->fetchAll(PDO::FETCH_COLUMN);
+        shuffle($times);
+        for ($i=0; $i < count($times); $i+=2) { if(isset($times[$i+1])) $pdo->prepare("INSERT INTO cg_disputas (time_a_id, time_b_id) VALUES (?, ?)")->execute([$times[$i], $times[$i+1]]); }
+    }
+    if ($acao == 'vitoria_cg') {
+        $pdo->prepare("UPDATE cg_disputas SET vencedor_id = ?, tempo_segundos = ?, status = 'concluido' WHERE id = ?")->execute([$_POST['vencedor_id'], (int)$_POST['tempo_cg'], $_POST['disputa_id']]);
+        $pdo->prepare("UPDATE cg_times SET pontos = pontos + 3 WHERE id = ?")->execute([$_POST['vencedor_id']]);
+    }
+
+    // Cronômetro Gincana
     if (isset($_POST['bt_acao'])) {
         $id_g = $_POST['grupo_id']; $agora = date('Y-m-d H:i:s');
         if ($_POST['bt_acao'] == 'start') $pdo->prepare("INSERT INTO registros (grupo_id, inicio, status) VALUES (?, ?, 'rodando')")->execute([$id_g, $agora]);
-        elseif ($_POST['bt_acao'] == 'pause') $pdo->prepare("UPDATE registros SET pausa_inicio = ?, status = 'pausado' WHERE grupo_id = ? AND status = 'rodando'")->execute([$agora, $id_g]);
-        elseif ($_POST['bt_acao'] == 'resume') {
-            $reg = $pdo->query("SELECT pausa_inicio FROM registros WHERE grupo_id = $id_g AND status = 'pausado'")->fetch();
-            $segundos = time() - strtotime($reg['pausa_inicio']);
-            $pdo->prepare("UPDATE registros SET total_pausa_segundos = total_pausa_segundos + ?, status = 'rodando', pausa_inicio = NULL WHERE grupo_id = ?")->execute([$segundos, $id_g]);
-        }
         elseif ($_POST['bt_acao'] == 'finish') $pdo->prepare("UPDATE registros SET fim = ?, status = 'finalizado' WHERE grupo_id = ? AND status != 'finalizado'")->execute([$agora, $id_g]);
     }
-    
-    $url_final = "gincana.php?tab=$aba_retorno" . ($pagina_atual > 1 ? "&p=$pagina_atual" : "") . ($filtro_jovem ? "&f_jovem=".urlencode($filtro_jovem) : "");
-    header("Location: $url_final"); exit;
+
+    header("Location: gincana.php?tab=$aba_retorno&p=$p_atual"); exit;
 }
 
-// 4. CONSULTAS
-// Contagem total para paginação (considerando filtro)
-$sql_total = "SELECT COUNT(*) FROM jovens $where_filtro";
-$stmt_total = $pdo->prepare($sql_total);
-$stmt_total->execute($params_filtro);
-$total_registros_filtro = $stmt_total->fetchColumn();
-$total_paginas = ceil($total_registros_filtro / $itens_por_pág);
+// --- 5. BUSCAS PARA INTERFACE ---
+$encontros_all = $pdo->query("SELECT * FROM encontros ORDER BY data_encontro DESC")->fetchAll(PDO::FETCH_ASSOC);
 
-// Busca jovens para o GRID
-$sql_grid = "SELECT * FROM jovens $where_filtro ORDER BY nome ASC LIMIT $offset, $itens_por_pág";
-$stmt_grid = $pdo->prepare($sql_grid);
-$stmt_grid->execute($params_filtro);
+// Jovens presentes no encontro ativo (Filtragem para Gincana/Cabo)
+$jovens_presentes = $pdo->query("SELECT j.* FROM jovens j JOIN presencas p ON j.id = p.jovem_id WHERE p.encontro_id = '$enc_id_ativo' ORDER BY j.nome ASC")->fetchAll(PDO::FETCH_ASSOC);
+$media_idade = $pdo->query("SELECT ROUND(AVG(YEAR(CURDATE()) - YEAR(data_nascimento))) FROM jovens j JOIN presencas p ON j.id = p.jovem_id WHERE p.encontro_id = '$enc_id_ativo' AND j.data_nascimento IS NOT NULL")->fetchColumn() ?: 0;
+
+// Lista Geral de Jovens (GRID)
+$stmt_grid = $pdo->prepare("SELECT * FROM jovens $where_j ORDER BY nome ASC LIMIT $offset, $itens_por_pag");
+$stmt_grid->execute($params_j);
 $jovens_grid = $stmt_grid->fetchAll(PDO::FETCH_ASSOC);
+$total_paginas = ceil($total_cadastrados / $itens_por_pag);
 
-$encontros = $pdo->query("SELECT * FROM encontros ORDER BY data_encontro DESC")->fetchAll(PDO::FETCH_ASSOC);
-$enc_ativo_id = $_GET['encontro_id'] ?? ($encontros[0]['id'] ?? null);
+// Aniversariantes
+$aniv_hoje = $pdo->query("SELECT nome FROM jovens WHERE DAY(data_nascimento) = DAY(NOW()) AND MONTH(data_nascimento) = MONTH(NOW())")->fetchAll(PDO::FETCH_ASSOC);
+$aniv_mes = $pdo->query("SELECT nome, DAY(data_nascimento) as dia FROM jovens WHERE MONTH(data_nascimento) = MONTH(NOW()) ORDER BY dia ASC")->fetchAll(PDO::FETCH_ASSOC);
 
-$grupos = $pdo->query("SELECT * FROM grupos ORDER BY nome_time ASC")->fetchAll(PDO::FETCH_ASSOC);
-$ativo = $pdo->query("SELECT r.*, g.nome_time FROM registros r JOIN grupos g ON g.id = r.grupo_id WHERE r.status IN ('rodando', 'pausado') LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-$ranking = $pdo->query("SELECT g.id as gid, g.nome_time, r.inicio, r.fim, r.total_pausa_segundos, (TIMESTAMPDIFF(SECOND, r.inicio, r.fim) - r.total_pausa_segundos) as tempo FROM registros r JOIN grupos g ON g.id = r.grupo_id WHERE r.status = 'finalizado' ORDER BY tempo ASC")->fetchAll(PDO::FETCH_ASSOC);
+// Gincana e Cabo de Guerra
+$equipes_gincana = $pdo->query("SELECT * FROM grupos ORDER BY nome_time ASC")->fetchAll(PDO::FETCH_ASSOC);
+$ativo_gincana = $pdo->query("SELECT r.*, g.nome_time FROM registros r JOIN grupos g ON g.id = r.grupo_id WHERE r.status IN ('rodando', 'pausado') LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+$ranking_gincana = $pdo->query("SELECT g.nome_time, (TIMESTAMPDIFF(SECOND, r.inicio, r.fim) - r.total_pausa_segundos) as tempo FROM registros r JOIN grupos g ON g.id = r.grupo_id WHERE r.status = 'finalizado' ORDER BY tempo ASC")->fetchAll(PDO::FETCH_ASSOC);
+$cg_times = $pdo->query("SELECT t.*, j.nome as capitao_nome FROM cg_times t LEFT JOIN jovens j ON t.capitao_id = j.id ORDER BY t.pontos DESC, t.id ASC")->fetchAll(PDO::FETCH_ASSOC);
+$disputas_cg = $pdo->query("SELECT d.*, ta.nome_santo as nome_a, tb.nome_santo as nome_b FROM cg_disputas d JOIN cg_times ta ON d.time_a_id = ta.id JOIN cg_times tb ON d.time_b_id = tb.id WHERE d.status = 'pendente'")->fetchAll(PDO::FETCH_ASSOC);
 ?>
 
 <!DOCTYPE html>
 <html lang="pt-br">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Gincana JMM - Gestão</title>
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Master Gincana - JMM</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
     <script src="https://cdn.jsdelivr.net/npm/qrcode_js@1.0.0/qrcode.min.js"></script>
     <style>
-        body { background: #f4f7f6; padding-bottom: 80px; font-family: sans-serif; }
+        body { background: #f4f7f6; font-family: 'Segoe UI', sans-serif; padding-bottom: 70px; }
         .card { border-radius: 15px; border: none; box-shadow: 0 5px 15px rgba(0,0,0,0.05); margin-bottom: 15px; }
-        .nav-pills .nav-link { border-radius: 25px; font-weight: bold; font-size: 0.75rem; color: #555; }
-        .nav-pills .nav-link.active { background-color: #0d6efd !important; box-shadow: 0 4px 12px rgba(13,110,253,0.3); }
-        #cronometro { font-size: 3.5rem; font-weight: 900; color: #dc3545; font-family: monospace; }
-        .small-label { font-size: 0.65rem; font-weight: 800; color: #888; text-transform: uppercase; }
+        .nav-pills .nav-link { border-radius: 25px; font-weight: bold; font-size: 0.65rem; color: #555; background: #fff; margin: 2px; }
+        .nav-pills .nav-link.active { background-color: #0d6efd !important; color: #fff !important; }
+        #cronometro, .timer-display { font-size: 3rem; font-weight: 900; color: #dc3545; font-family: monospace; letter-spacing: -2px; }
+        .badge-count { font-size: 0.6rem; vertical-align: middle; }
     </style>
 </head>
 <body>
 
-<nav class="navbar navbar-light bg-white shadow-sm mb-3">
+<nav class="navbar navbar-light bg-white shadow-sm mb-3 sticky-top">
     <div class="container d-flex justify-content-between align-items-center">
-        <a href="sistema_dashboard.php" class="btn btn-outline-dark border-0"><i class="bi bi-grid-3x3-gap-fill"></i></a>
-        <span class="fw-bold text-primary">JMM SYSTEM</span>
-        <button class="btn btn-primary btn-sm rounded-pill px-3 fw-bold" data-bs-toggle="modal" data-bs-target="#modalGerirEncontros">ENCONTROS</button>
+        <a href="sistema_dashboard.php" class="btn btn-outline-dark border-0"><i class="bi bi-grid-3x3-gap-fill fs-5"></i></a>
+        <img src="Img/logo.jpg" height="35" class="rounded-circle border">
+        <button class="btn btn-primary btn-sm rounded-pill fw-bold px-3" data-bs-toggle="modal" data-bs-target="#modalGerirEncontros">ENCONTROS</button>
     </div>
 </nav>
 
 <div class="container">
-    <ul class="nav nav-pills nav-fill mb-4 bg-white p-1 rounded-pill shadow-sm" id="pills-tab" role="tablist">
-        <li class="nav-item"><button class="nav-link active" id="tab-chamada-btn" data-bs-toggle="pill" data-bs-target="#tab-chamada" type="button">CHAMADA</button></li>
-        <li class="nav-item"><button class="nav-link" id="tab-jovens-btn" data-bs-toggle="pill" data-bs-target="#tab-jovens" type="button">JOVENS</button></li>
+    
+    <!-- ABAS -->
+    <ul class="nav nav-pills nav-fill mb-4 bg-white p-1 rounded shadow-sm" id="pills-tab" role="tablist">
+        <li class="nav-item"><button class="nav-link active" id="tab-chamada-btn" data-bs-toggle="pill" data-bs-target="#tab-chamada" type="button">CHAMADA <span class="badge bg-success badge-count"><?=$total_presentes_hoje?></span></button></li>
+        <li class="nav-item"><button class="nav-link" id="tab-cg-btn" data-bs-toggle="pill" data-bs-target="#tab-cg" type="button">CABO</button></li>
         <li class="nav-item"><button class="nav-link" id="tab-exe-btn" data-bs-toggle="pill" data-bs-target="#tab-exe" type="button">PROVA</button></li>
-        <li class="nav-item"><button class="nav-link" id="tab-rank-btn" data-bs-toggle="pill" data-bs-target="#tab-rank" type="button">RANKING</button></li>
+        <li class="nav-item"><button class="nav-link" id="tab-jovens-btn" data-bs-toggle="pill" data-bs-target="#tab-jovens" type="button">JOVENS <span class="badge bg-secondary badge-count"><?=$total_cadastrados?></span></button></li>
+        <li class="nav-item"><button class="nav-link" id="tab-ata-btn" data-bs-toggle="pill" data-bs-target="#tab-ata" type="button">ATA</button></li>
+        <li class="nav-item"><button class="nav-link" id="tab-rank-btn" data-bs-toggle="pill" data-bs-target="#tab-rank" type="button">RANK</button></li>
     </ul>
 
     <div class="tab-content">
         
-        <!-- ABA 1: CHAMADA (FOCO EM AGILIDADE) -->
+        <!-- 1. CHAMADA -->
         <div class="tab-pane fade show active" id="tab-chamada" role="tabpanel">
-            <div class="card p-3 border-top border-5 border-success">
-                <h6 class="fw-bold mb-2">Encontro Selecionado</h6>
-                <div class="d-flex gap-2 mb-3">
-                    <select class="form-select shadow-sm" id="selectEncontro" onchange="window.location.href='gincana.php?tab=chamada&encontro_id='+this.value">
-                        <?php foreach($encontros as $e): ?>
-                            <option value="<?=$e['id']?>" <?=$e['id']==$enc_ativo_id?'selected':''?>><?=date('d/m', strtotime($e['data_encontro']))?> - <?=$e['tema']?></option>
-                        <?php endforeach; ?>
-                    </select>
-                    <button class="btn btn-dark shadow-sm" onclick="abrirQr()"><i class="bi bi-qr-code"></i></button>
+            <div class="card p-3 border-top border-5 border-success text-center">
+                <h6 class="fw-bold mb-1 text-success text-uppercase">Check-in: <?=$enc_ativo['tema'] ?? 'Selecione um Encontro'?></h6>
+                <div class="d-flex gap-2 mt-3">
+                    <button class="btn btn-dark btn-lg w-100 rounded-pill shadow" onclick="abrirQr()"><i class="bi bi-qr-code-scan"></i> QR CODE</button>
                 </div>
-                
-                <label class="small-label mb-1">Busca Rápida de Jovem</label>
-                <input type="text" id="inputBuscaManual" class="form-control border-primary" placeholder="Nome ou Celular..." onkeyup="buscarChamada(this.value)">
-                <div id="resultadoChamada" class="list-group mt-2 shadow-sm"></div>
-            </div>
-
-            <div class="table-responsive bg-white rounded shadow-sm border mt-3">
-                <table class="table table-sm table-hover mb-0 text-center" style="font-size: 0.7rem;">
-                    <thead class="table-dark">
-                        <tr>
-                            <th class="ps-3 text-start">Membro</th>
-                            <?php 
-                            $col_encs = array_slice($encontros, 0, 4); 
-                            foreach(array_reverse($col_encs) as $u) echo "<th>".date('d/m', strtotime($u['data_encontro']))."</th>";
-                            ?>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php 
-                        $res_chamada = $pdo->query("SELECT id, nome FROM jovens ORDER BY nome ASC LIMIT 60")->fetchAll();
-                        foreach($res_chamada as $lj): ?>
-                        <tr>
-                            <td class="ps-3 text-start fw-bold text-truncate" style="max-width:140px"><?=$lj['nome']?></td>
-                            <?php foreach(array_reverse($col_encs) as $u): 
-                                $st = $pdo->prepare("SELECT id FROM presencas WHERE jovem_id = ? AND encontro_id = ?");
-                                $st->execute([$lj['id'], $u['id']]);
-                                $pres = $st->fetch();
-                            ?>
-                                <td>
-                                    <?php if($pres): ?>
-                                        <form method="POST" onsubmit="return confirm('Remover presença?')">
-                                            <input type="hidden" name="form_acao" value="remover_presenca"><input type="hidden" name="aba_destino" value="chamada">
-                                            <input type="hidden" name="j_id" value="<?=$lj['id']?>"><input type="hidden" name="e_id" value="<?=$u['id']?>">
-                                            <button type="submit" class="btn btn-link p-0 text-success"><i class="bi bi-check-circle-fill"></i></button>
-                                        </form>
-                                    <?php else: ?>
-                                        <i class="bi bi-dash text-light"></i>
-                                    <?php endif; ?>
-                                </td>
-                            <?php endforeach; ?>
-                        </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <!-- ABA 2: JOVENS (COM FILTRO E PAGINAÇÃO) -->
-        <div class="tab-pane fade" id="tab-jovens" role="tabpanel">
-            <div class="card p-3 border-top border-5 border-info">
-                <h6 class="fw-bold mb-3">Filtrar Base de Dados</h6>
-                <form method="GET" class="d-flex gap-2">
-                    <input type="hidden" name="tab" value="jovens">
-                    <input type="text" name="f_jovem" class="form-control" placeholder="Buscar por Nome ou Celular..." value="<?= htmlspecialchars($filtro_jovem) ?>">
-                    <button type="submit" class="btn btn-info text-white fw-bold">BUSCAR</button>
-                    <?php if($filtro_jovem): ?>
-                        <a href="gincana.php?tab=jovens" class="btn btn-light border"><i class="bi bi-x-lg"></i></a>
-                    <?php endif; ?>
-                </form>
-            </div>
-
-            <div class="table-responsive">
-                <table class="table table-sm table-hover bg-white rounded shadow-sm border">
-                    <thead class="table-light"><tr><th class="ps-3">Jovem</th><th class="text-end pe-3">Ação</th></tr></thead>
-                    <tbody>
-                        <?php foreach($jovens_grid as $j): ?>
-                        <tr class="align-middle">
-                            <td class="ps-3">
-                                <div class="fw-bold" style="font-size: 0.85rem;"><?=$j['nome']?></div>
-                                <small class="text-muted" style="font-size: 0.7rem;">
-                                    <i class="bi bi-whatsapp"></i> <?=$j['telefone']?> | 
-                                    <?= ($j['data_nascimento'] ? date('d/m/y', strtotime($j['data_nascimento'])) : $j['ano_nascimento']) ?>
-                                </small>
-                            </td>
-                            <td class="text-end pe-3">
-                                <form method="POST" onsubmit="return confirm('Excluir?')">
-                                    <input type="hidden" name="form_acao" value="deletar_jovem"><input type="hidden" name="id_jovem" value="<?=$j['id']?>">
-                                    <button type="submit" class="btn btn-link text-danger p-0"><i class="bi bi-trash fs-5"></i></button>
-                                </form>
-                            </td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php if(!$jovens_grid): ?> <tr><td colspan="2" class="text-center py-4 text-muted small">Nenhum jovem encontrado.</td></tr> <?php endif; ?>
-                    </tbody>
-                </table>
+                <hr>
+                <input type="text" class="form-control" placeholder="Buscar para Chamada Manual..." onkeyup="buscarChamada(this.value)">
+                <div id="resultadoChamada" class="list-group mt-2"></div>
             </div>
             
-            <?php if($total_paginas > 1): ?>
-            <nav class="mt-3"><ul class="pagination pagination-sm justify-content-center">
-                <?php for($i=1; $i<=$total_paginas; $i++): ?>
-                    <li class="page-item <?=($pagina_atual==$i)?'active':''?>"><a class="page-link" href="?p=<?=$i?>&tab=jovens&f_jovem=<?=urlencode($filtro_jovem)?>"><?=$i?></a></li>
-                <?php endfor; ?>
-            </ul></nav>
-            <?php endif; ?>
-        </div>
-
-        <!-- ABA 3: PROVA (CRONÔMETRO) -->
-        <div class="tab-pane fade" id="tab-exe" role="tabpanel">
-            <div class="card p-4 text-center border-top border-5 border-primary">
-                <?php if ($ativo): ?>
-                    <h1 class="fw-bold text-primary mb-1 text-uppercase"><?= $ativo['nome_time'] ?></h1>
-                    <div id="cronometro">00:00:00</div>
-                    <form method="POST" class="mt-3">
-                        <input type="hidden" name="grupo_id" value="<?= $ativo['grupo_id'] ?>"><input type="hidden" name="aba_destino" value="exe">
-                        <div class="d-grid gap-3">
-                            <button type="submit" name="bt_acao" value="<?=($ativo['status']=='rodando'?'pause':'resume')?>" class="btn <?=($ativo['status']=='rodando'?'btn-warning':'btn-success')?> btn-xl shadow"><?=($ativo['status']=='rodando'?'PAUSAR PROVA':'RETOMAR PROVA')?></button>
-                            <button type="submit" name="bt_acao" value="finish" class="btn btn-danger btn-xl shadow" onclick="return confirm('Finalizar?')">FINALIZAR AGORA</button>
-                        </div>
-                    </form>
-                <?php else: ?>
-                    <h5 class="fw-bold mb-3 text-uppercase">Gincana em Andamento</h5>
-                    <form method="POST">
-                        <input type="hidden" name="aba_destino" value="exe">
-                        <select name="grupo_id" class="form-select form-select-lg mb-3 shadow-sm" required>
-                            <option value="">Selecione o Time...</option>
-                            <?php foreach($grupos as $g): ?><option value="<?=$g['id']?>"><?=$g['nome_time']?></option><?php endforeach; ?>
-                        </select>
-                        <button type="submit" name="bt_acao" value="start" class="btn btn-primary btn-xl w-100 shadow">START</button>
-                    </form>
-                <?php endif; ?>
+            <div class="table-responsive bg-white rounded shadow-sm border mt-3">
+                <table class="table table-sm text-center mb-0" style="font-size:0.7rem;">
+                    <thead class="table-dark"><tr><th class="text-start ps-3">Membro Presente</th><?php $cols = array_slice($encontros_all, 0, 4); foreach(array_reverse($cols) as $u) echo "<th>".date('d/m', strtotime($u['data_encontro']))."</th>"; ?></tr></thead>
+                    <tbody><?php foreach($jovens_presentes as $lj): ?><tr><td class="text-start ps-3 fw-bold"><?=$lj['nome']?></td><?php foreach(array_reverse($cols) as $u): $pres = $pdo->query("SELECT id FROM presencas WHERE jovem_id={$lj['id']} AND encontro_id={$u['id']}")->fetch(); ?><td><?php if($pres): ?><form method="POST"><input type="hidden" name="form_acao" value="remover_presenca"><input type="hidden" name="aba_destino" value="chamada"><input type="hidden" name="j_id" value="<?=$lj['id']?>"><input type="hidden" name="e_id" value="<?=$u['id']?>"><button type="submit" class="btn btn-link p-0 text-success"><i class="bi bi-check-circle-fill"></i></button></form><?php else: ?><i class="bi bi-dash text-light"></i><?php endif; ?></td><?php endforeach; ?></tr><?php endforeach; ?></tbody>
+                </table>
             </div>
         </div>
 
-        <!-- ABA 4: RANKING -->
+        <!-- 2. CABO DE GUERRA -->
+        <div class="tab-pane fade" id="tab-cg" role="tabpanel">
+            <div class="card p-3 border-top border-5 border-warning mb-3">
+                <form method="POST" class="row g-2 mb-3">
+                    <input type="hidden" name="form_acao" value="novo_time_cg"><input type="hidden" name="aba_destino" value="cg">
+                    <div class="col-6"><input type="text" name="nome_santo" class="form-control" placeholder="Time Santo" required></div>
+                    <div class="col-6"><select name="capitao_id" class="form-select"><option value="">Capitão...</option><?php foreach($jovens_presentes as $jph): ?><option value="<?=$jph['id']?>"><?=$jph['nome']?></option><?php endforeach; ?></select></div>
+                    <button type="submit" class="btn btn-warning w-100 fw-bold mt-2">ADICIONAR TIME</button>
+                </form>
+                <form method="POST"><input type="hidden" name="form_acao" value="gerar_batalhas"><input type="hidden" name="aba_destino" value="cg"><button type="submit" class="btn btn-dark w-100 fw-bold">SORTEAR BATALHAS</button></form>
+            </div>
+
+            <?php foreach($disputas_cg as $dp): ?>
+                <div class="card p-3 text-center shadow-sm border-start border-5 border-primary">
+                    <div class="d-flex justify-content-around align-items-center mb-1"><div class="fw-bold"><?=$dp['nome_a']?></div><div class="small fw-bold">VS</div><div class="fw-bold"><?=$dp['nome_b']?></div></div>
+                    <div id="timer-cg-<?=$dp['id']?>" class="h3 fw-bold text-danger my-1">00:00:00</div>
+                    <div class="d-flex gap-2"><button class="btn btn-success btn-sm w-100" onclick="startCgTimer(<?=$dp['id']?>)">START</button><button class="btn btn-dark btn-sm w-100" onclick="vencerCg(<?=$dp['id']?>, <?=$dp['time_a_id']?>, <?=$dp['time_b_id']?>, '<?=$dp['nome_a']?>', '<?=$dp['nome_b']?>')">VENCEDOR</button></div>
+                </div>
+            <?php endforeach; ?>
+
+            <div class="card p-3 shadow-sm">
+                <div class="d-flex justify-content-between mb-2"><h6>RANKING CABO</h6><a href="gerar_cg_pdf.php" target="_blank" class="btn btn-sm btn-danger py-0">PDF</a></div>
+                <table class="table table-sm mb-0 small">
+                    <tbody><?php foreach($cg_times as $idx => $ct): ?><tr><td><?=($idx+1)?>º</td><td class="fw-bold"><?=$ct['nome_santo']?></td><td><small><?=$ct['capitao_nome']?></small></td><td class="text-end"><b><?=$ct['pontos']?></b></td>
+                    <td class="text-end">
+                        <button class="btn btn-link btn-sm p-0 text-primary me-2" onclick="editarTimeCG(<?=$ct['id']?>, '<?=$ct['nome_santo']?>')"><i class="bi bi-pencil"></i></button>
+                        <form method="POST" class="d-inline"><input type="hidden" name="form_acao" value="excluir_time_cg"><input type="hidden" name="time_id" value="<?=$ct['id']?>"><input type="hidden" name="aba_destino" value="cg"><button type="submit" class="btn btn-link btn-sm p-0 text-danger" onclick="return confirm('Excluir?')"><i class="bi bi-trash"></i></button></form>
+                    </td></tr><?php endforeach; ?></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 3. PROVA (GINCANA) -->
+        <div class="tab-pane fade" id="tab-exe" role="tabpanel">
+            <div class="card p-3 border-top border-5 border-primary shadow-sm">
+                <form method="POST" class="d-flex gap-2">
+                    <input type="hidden" name="form_acao" value="novo_grupo"><input type="hidden" name="aba_destino" value="exe">
+                    <input type="text" name="nome_time" class="form-control" placeholder="Novo Time Gincana" required>
+                    <button type="submit" class="btn btn-primary">CRIAR</button>
+                </form>
+            </div>
+            <div class="card p-4 text-center">
+                <?php if ($ativo_gincana): ?>
+                    <h1 class="fw-bold text-primary mb-2 text-uppercase"><?= $ativo_gincana['nome_time'] ?></h1><div id="cronometro">00:00:00</div>
+                    <form method="POST" class="mt-3"><input type="hidden" name="grupo_id" value="<?= $ativo_gincana['grupo_id'] ?>"><input type="hidden" name="aba_destino" value="exe"><div class="d-grid gap-2"><button type="submit" name="bt_acao" value="finish" class="btn btn-danger btn-xl shadow" onclick="return confirm('Finalizar?')">FINALIZAR PROVA</button></div></form>
+                <?php else: ?>
+                    <form method="POST"><input type="hidden" name="aba_destino" value="exe"><select name="grupo_id" class="form-select form-select-lg mb-3 shadow-sm" required><option value="">Escolha Equipe...</option><?php foreach($equipes_gincana as $eg): ?><option value="<?=$eg['id']?>"><?=$eg['nome_time']?></option><?php endforeach; ?></select><button type="submit" name="bt_acao" value="start" class="btn btn-primary btn-xl w-100 shadow">START</button></form>
+                <?php endif; ?>
+            </div>
+            <div class="mt-3"><?php foreach($equipes_gincana as $eg): ?><div class="card p-2 mb-2 shadow-sm d-flex flex-row justify-content-between align-items-center"><form method="POST" class="d-flex flex-grow-1"><input type="hidden" name="form_acao" value="editar_equipe_gincana"><input type="hidden" name="id_time" value="<?=$eg['id']?>"><input type="hidden" name="aba_destino" value="exe"><input type="text" name="nome_time" value="<?=$eg['nome_time']?>" class="form-control form-control-sm border-0 bg-transparent fw-bold text-primary"><button type="submit" class="btn btn-link text-success p-0 ms-1"><i class="bi bi-check-circle"></i></button></form><form method="POST"><input type="hidden" name="form_acao" value="deletar_equipe_gincana"><input type="hidden" name="id_time" value="<?=$eg['id']?>"><input type="hidden" name="aba_destino" value="exe"><button type="submit" class="btn btn-link text-danger p-0 ms-2" onclick="return confirm('Deletar?')"><i class="bi bi-trash"></i></button></form></div><?php endforeach; ?></div>
+        </div>
+
+        <!-- 4. JOVENS (GRID COMPLETO) -->
+        <div class="tab-pane fade" id="tab-jovens" role="tabpanel">
+            <div class="card p-3 border-top border-5 border-info shadow-sm">
+                <form method="GET" class="d-flex gap-2 mb-3"><input type="hidden" name="tab" value="jovens"><input type="text" name="f_jovem" class="form-control" placeholder="Buscar entre os <?=$total_cadastrados?>..." value="<?=htmlspecialchars($f_j)?>"><button type="submit" class="btn btn-info text-white"><i class="bi bi-search"></i></button></form>
+                <form method="POST"><input type="hidden" name="form_acao" value="novo_jovem"><input type="hidden" name="aba_destino" value="jovens">
+                    <input type="text" name="nome" class="form-control mb-2" placeholder="Nome Completo" required>
+                    <div class="row g-2 mb-2"><div class="col-7"><input type="date" name="data_nascimento" class="form-control" onchange="document.getElementById('ano_set').value = this.value.split('-')[0]"></div><div class="col-5"><input type="number" name="ano_nascimento" id="ano_set" class="form-control" required></div></div>
+                    <input type="text" name="telefone" class="form-control mb-2" placeholder="WhatsApp">
+                    <button type="submit" class="btn btn-info w-100 fw-bold text-white py-2">SALVAR CADASTRO</button>
+                </form>
+            </div>
+            <div class="table-responsive"><table class="table table-sm table-hover bg-white rounded border"><tbody><?php foreach($jovens_grid as $j): ?>
+                <tr class="align-middle"><td class="ps-3"><div class="fw-bold small"><?=$j['nome']?></div><small class="text-muted small"><?=$j['telefone']?> | <?=($j['data_nascimento']?date('d/m/y',strtotime($j['data_nascimento'])):$j['ano_nascimento'])?></small></td><td class="text-end pe-3"><form method="POST"><input type="hidden" name="form_acao" value="deletar_jovem"><input type="hidden" name="id_jovem" value="<?=$j['id']?>"><button type="submit" class="btn btn-link text-danger p-0" onclick="return confirm('Deletar?')"><i class="bi bi-trash"></i></button></form></td></tr>
+            <?php endforeach; ?></tbody></table></div>
+            <nav class="mt-3"><ul class="pagination pagination-sm justify-content-center"><?php for($i=1; $i<=$total_paginas; $i++): ?><li class="page-item <?=($p_atual==$i)?'active':''?>"><a class="page-link" href="?p=<?=$i?>&tab=jovens&f_jovem=<?=urlencode($f_j)?>"><?=$i?></a></li><?php endfor; ?></ul></nav>
+        </div>
+
+        <!-- 5. ATA / RELATÓRIO -->
+        <div class="tab-pane fade" id="tab-ata" role="tabpanel">
+            <div class="card p-3 border-top border-5 border-dark shadow-sm">
+                <div class="row text-center mb-3"><div class="col-6 border-end"><h6>Presentes</h6><h3 class="fw-bold text-primary"><?=$total_presentes_hoje?></h3></div><div class="col-6"><h6>Média Idade</h6><h3 class="fw-bold text-success"><?=$media_idade?> anos</h3></div></div>
+                <form method="POST">
+                    <input type="hidden" name="form_acao" value="salvar_ata"><input type="hidden" name="aba_destino" value="ata">
+                    <textarea name="texto_ata" class="form-control mb-3" rows="8" placeholder="Relato do encontro..."><?= $enc_ativo['ata'] ?? '' ?></textarea>
+                    <button type="submit" class="btn btn-dark w-100 fw-bold mb-2">SALVAR ATA</button>
+                    <a href="gerar_encontro_pdf.php" target="_blank" class="btn btn-outline-danger w-100 fw-bold">PDF DO ENCONTRO</a>
+                </form>
+            </div>
+        </div>
+
+        <!-- 6. RANKING -->
         <div class="tab-pane fade" id="tab-rank" role="tabpanel">
-            <h6 class="fw-bold text-center mb-3">RANKING OFICIAL</h6>
-            <?php foreach($ranking as $i => $r): ?>
+            <?php foreach($ranking_gincana as $i => $r): ?>
                 <div class="card p-3 mb-2 border-start border-5 border-success d-flex flex-row justify-content-between align-items-center shadow-sm">
                     <div><span class="badge bg-success rounded-pill me-1"><?=($i+1)?>º</span> <span class="fw-bold text-uppercase small"><?= $r['nome_time'] ?></span></div>
                     <div class="h4 m-0 fw-bold text-danger"><?= gmdate("H:i:s", $r['tempo']) ?></div>
@@ -315,78 +283,77 @@ $ranking = $pdo->query("SELECT g.id as gid, g.nome_time, r.inicio, r.fim, r.tota
     </div>
 </div>
 
-<!-- MODAL: GESTÃO DE ENCONTROS -->
-<div class="modal fade" id="modalGerirEncontros" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content border-0 shadow">
-    <div class="modal-header bg-dark text-white"><h5>Eventos / Encontros</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
-    <div class="modal-body p-4">
-        <form method="POST" class="bg-light p-3 rounded mb-4 border">
-            <input type="hidden" name="form_acao" value="novo_encontro"><input type="hidden" name="aba_destino" value="chamada">
-            <h6 class="fw-bold mb-3 small">CADASTRAR NOVO ENCONTRO</h6>
-            <div class="row g-2">
-                <div class="col-md-3"><label class="small-label">Data</label><input type="date" name="data_e" class="form-control" required value="<?=date('Y-m-d')?>"></div>
-                <div class="col-md-4"><label class="small-label">Local</label><input type="text" name="local_e" class="form-control" placeholder="Ex: Matriz" required></div>
-                <div class="col-md-5"><label class="small-label">Tema</label><input type="text" name="tema_e" class="form-control" placeholder="Tema do Encontro" required></div>
-                <div class="col-12 mt-3"><button type="submit" class="btn btn-success w-100 fw-bold">SALVAR ENCONTRO</button></div>
-            </div>
-        </form>
-        <div class="table-responsive"><table class="table table-sm align-middle small">
-            <thead><tr><th>Data</th><th>Tema</th><th>Ação</th></tr></thead>
-            <tbody>
-                <?php foreach($encontros as $e): ?>
-                <tr>
-                    <td><?=date('d/m/y', strtotime($e['data_encontro']))?></td><td><?=$e['tema']?></td>
-                    <td><form method="POST" onsubmit="return confirm('Excluir?')"><input type="hidden" name="form_acao" value="excluir_encontro"><input type="hidden" name="e_id" value="<?=$e['id']?>"><button type="submit" class="btn btn-link text-danger p-0"><i class="bi bi-trash"></i></button></form></td>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table></div>
-    </div>
-</div></div></div>
+<!-- MODAIS -->
+<div class="modal fade" id="modalGerirEncontros" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content"><div class="modal-header bg-dark text-white"><h5>Meus Eventos</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div><div class="modal-body p-4">
+    <form method="POST" class="bg-light p-3 rounded mb-3 border shadow-sm"><input type="hidden" name="form_acao" value="novo_encontro">
+        <div class="row g-2">
+            <div class="col-md-3"><label class="small fw-bold">DATA</label><input type="date" name="data_e" class="form-control" required value="<?=date('Y-m-d')?>"></div>
+            <div class="col-md-4"><label class="small fw-bold">LOCAL</label><input type="text" name="local_e" class="form-control" required></div>
+            <div class="col-md-5"><label class="small fw-bold">TEMA</label><input type="text" name="tema_e" class="form-control" required></div>
+            <button type="submit" class="btn btn-success w-100 mt-2 fw-bold">CADASTRAR</button>
+        </div>
+    </form>
+    <table class="table table-sm small"><thead><tr><th>Data</th><th>Tema</th><th>Ação</th></tr></thead><tbody>
+    <?php foreach($encontros_all as $e): ?><tr><td><?=date('d/m/y', strtotime($e['data_encontro']))?></td><td><?=$e['tema']?> <?=($e['ativo']?'<span class="badge bg-success">ATIVO</span>':'')?></td><td><div class="btn-group"><form method="POST"><input type="hidden" name="form_acao" value="ativar_encontro"><input type="hidden" name="e_id" value="<?=$e['id']?>"><button type="submit" class="btn btn-sm btn-outline-success border-0"><i class="bi bi-lightning-fill"></i></button></form><form method="POST" onsubmit="return confirm('Apagar?')"><input type="hidden" name="form_acao" value="excluir_encontro"><input type="hidden" name="e_id" value="<?=$e['id']?>"><button type="submit" class="btn btn-sm btn-outline-danger border-0"><i class="bi bi-trash"></i></button></form></div></td></tr><?php endforeach; ?>
+    </tbody></table>
+</div></div></div></div>
 
-<!-- MODAL: CADASTRO RÁPIDO (POPUP NA CHAMADA) -->
-<div class="modal fade" id="modalCadRapido" tabindex="-1" data-bs-backdrop="static">
-    <div class="modal-dialog modal-dialog-centered">
-        <form id="formCadRapido" class="modal-content border-0 shadow-lg">
-            <div class="modal-header bg-info text-white">
-                <h5 class="modal-title fw-bold"><i class="bi bi-person-plus-fill"></i> Cadastro Rápido</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body p-4">
-                <div class="mb-2">
-                    <label class="small-label">NOME E SOBRENOME</label>
-                    <input type="text" id="cad_nome" name="nome" class="form-control" required>
-                </div>
-                <div class="mb-2">
-                    <label class="small-label">WHATSAPP (CELULAR)</label>
-                    <input type="text" id="cad_tel" name="tel" class="form-control" placeholder="(00) 00000-0000" required>
-                </div>
-                <div class="row g-2">
-                    <div class="col-7">
-                        <label class="small-label">DATA NASCIMENTO</label>
-                        <input type="date" id="cad_data" name="data_nasc" class="form-control" onchange="document.getElementById('cad_ano').value = this.value.split('-')[0]">
-                    </div>
-                    <div class="col-5">
-                        <label class="small-label">ANO (AUTO)</label>
-                        <input type="number" id="cad_ano" name="ano" class="form-control" required>
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer bg-light border-0">
-                <button type="button" class="btn btn-secondary rounded-pill px-4 fw-bold" data-bs-dismiss="modal">CANCELAR</button>
-                <button type="button" onclick="enviarCadastroRapido()" class="btn btn-info text-white rounded-pill px-4 fw-bold">SALVAR E MARCAR PRESENÇA</button>
-            </div>
-        </form>
-    </div>
-</div>
+<div class="modal fade" id="modalVitoriaCg" tabindex="-1"><div class="modal-dialog modal-dialog-centered"><form method="POST" class="modal-content border-0"><input type="hidden" name="form_acao" value="vitoria_cg"><input type="hidden" name="aba_destino" value="cg"><input type="hidden" name="disputa_id" id="modal_id_disputa"><input type="hidden" name="tempo_cg" id="modal_tempo_cg">
+    <div class="modal-header bg-dark text-white"><h5>Vencedor</h5></div><div class="modal-body p-4 text-center"><div class="d-grid gap-2"><button type="submit" name="vencedor_id" id="btn_time_a" class="btn btn-outline-primary btn-lg fw-bold"></button><div class="fw-bold text-danger">VS</div><button type="submit" name="vencedor_id" id="btn_time_b" class="btn btn-outline-primary btn-lg fw-bold"></button></div></div>
+</form></div></div>
 
-<!-- MODAL: QR CODE -->
-<div class="modal fade" id="modalQr" tabindex="-1"><div class="modal-dialog modal-dialog-centered text-center"><div class="modal-content p-4 border-0 shadow-lg"><h5 class="fw-bold mb-3 text-primary">QR CODE CHAMADA</h5><div id="qrcode" class="d-flex justify-content-center mb-3 p-3 bg-white border rounded shadow-sm"></div><p class="small text-muted">Check-in Facial dos Jovens</p><button class="btn btn-secondary w-100 rounded-pill fw-bold" data-bs-dismiss="modal">FECHAR</button></div></div></div>
+<div class="modal fade" id="modalQr" tabindex="-1"><div class="modal-dialog modal-dialog-centered text-center"><div class="modal-content p-4"><div id="qrcode" class="d-flex justify-content-center mb-3"></div><button class="btn btn-secondary w-100 rounded-pill" data-bs-dismiss="modal">Fechar</button></div></div></div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    const modalCadRapido = new bootstrap.Modal(document.getElementById('modalCadRapido'));
+    // --- FUNÇÕES GLOBAIS (RESOLVE REFERENCEERROR) ---
+    function abrirQr() {
+        const eId = <?=$enc_id_ativo?>;
+        if(!eId) return alert('Ative um encontro no botão azul superior!');
+        const container = document.getElementById("qrcode");
+        container.innerHTML = '';
+        new QRCode(container, { text: "https://jmmovimento.com.br/checkin.php?e=" + eId, width: 240, height: 240 });
+        new bootstrap.Modal(document.getElementById('modalQr')).show();
+    }
 
-    // Persistência de Abas
+    function buscarChamada(q) {
+        const res = document.getElementById('resultadoChamada');
+        if(q.length < 2) { res.innerHTML = ''; return; }
+        fetch('acoes_presenca.php?buscar=' + q).then(r => r.json()).then(dados => {
+            let html = '';
+            dados.forEach(d => { html += `<button type="button" onclick="salvarManual(${d.id})" class="list-group-item small fw-bold py-2 text-uppercase">${d.nome}</button>`; });
+            res.innerHTML = html;
+        });
+    }
+
+    function salvarManual(jId) {
+        const eId = <?=$enc_id_ativo?>;
+        const fd = new FormData();
+        fd.append('jovem_id', jId);
+        fd.append('encontro_id', eId);
+        fetch('acoes_presenca.php?salvar_manual=1', { method: 'POST', body: fd }).then(() => location.reload());
+    }
+
+    let cgTimers = {}, cgIntervals = {};
+    function startCgTimer(id) {
+        if(cgIntervals[id]) return;
+        if(!cgTimers[id]) cgTimers[id] = 0;
+        cgIntervals[id] = setInterval(() => {
+            cgTimers[id]++;
+            document.getElementById('timer-cg-'+id).innerText = new Date(cgTimers[id] * 1000).toISOString().substr(11, 8);
+        }, 1000);
+    }
+
+    function vencerCg(disputaId, idA, idB, nomeA, nomeB) {
+        const t = cgTimers[disputaId] || 0;
+        document.getElementById('modal_id_disputa').value = disputaId;
+        document.getElementById('modal_tempo_cg').value = t;
+        document.getElementById('btn_time_a').innerText = nomeA; document.getElementById('btn_time_a').value = idA;
+        document.getElementById('btn_time_b').innerText = nomeB; document.getElementById('btn_time_b').value = idB;
+        new bootstrap.Modal(document.getElementById('modalVitoriaCg')).show();
+    }
+
+    // PERSISTÊNCIA DE ABAS
     document.addEventListener("DOMContentLoaded", function() {
         const urlParams = new URLSearchParams(window.location.search);
         const tab = urlParams.get('tab');
@@ -395,82 +362,23 @@ $ranking = $pdo->query("SELECT g.id as gid, g.nome_time, r.inicio, r.fim, r.tota
             if(btn) new bootstrap.Tab(btn).show();
         } else {
             const activeId = localStorage.getItem('activeTabGincana');
-            if(activeId) {
-                const btn = document.getElementById(activeId);
-                if(btn) new bootstrap.Tab(btn).show();
-            }
+            if(activeId) { const btn = document.getElementById(activeId); if(btn) new bootstrap.Tab(btn).show(); }
         }
         document.querySelectorAll('button[data-bs-toggle="pill"]').forEach(btn => {
             btn.addEventListener('shown.bs.tab', e => localStorage.setItem('activeTabGincana', e.target.id));
         });
     });
 
-    // Chamada Manual e Popup de Cadastro
-    function buscarChamada(q) {
-        const res = document.getElementById('resultadoChamada');
-        if(q.length < 2) { res.innerHTML = ''; return; }
-        fetch('acoes_presenca.php?buscar=' + q)
-        .then(r => r.json()).then(dados => {
-            let html = '';
-            if(dados.length === 0) {
-                html = `<button type="button" onclick="abrirPopupCadastro('${q}')" class="list-group-item list-group-item-action list-group-item-warning fw-bold small"><i class="bi bi-plus-circle-fill me-1"></i> "${q}" não encontrado. Clique para Cadastrar Agora!</button>`;
-            } else {
-                dados.forEach(d => {
-                    html += `<button type="button" onclick="salvarManual(${d.id})" class="list-group-item list-group-item-action small fw-bold py-2">${d.nome} <small class="text-muted">(${d.telefone})</small></button>`;
-                });
-            }
-            res.innerHTML = html;
-        });
-    }
-
-    function abrirPopupCadastro(nome) {
-        document.getElementById('cad_nome').value = nome;
-        modalCadRapido.show();
-    }
-
-    function enviarCadastroRapido() {
-        const fd = new FormData();
-        fd.append('nome', document.getElementById('cad_nome').value);
-        fd.append('tel', document.getElementById('cad_tel').value);
-        fd.append('data_nasc', document.getElementById('cad_data').value);
-        fd.append('ano', document.getElementById('cad_ano').value);
-
-        fetch('acoes_presenca.php?cadastrar_rapido_completo=1', { method: 'POST', body: fd })
-        .then(r => r.json()).then(res => {
-            if(res.id) salvarManual(res.id);
-        });
-    }
-
-    function salvarManual(jId) {
-        const eId = document.getElementById('selectEncontro').value;
-        const fd = new FormData(); fd.append('jovem_id', jId); fd.append('encontro_id', eId);
-        fetch('acoes_presenca.php?salvar_manual=1', { method: 'POST', body: fd }).then(() => location.reload());
-    }
-
-    function abrirQr() {
-        const eId = document.getElementById('selectEncontro').value;
-        const container = document.getElementById("qrcode");
-        container.innerHTML = '';
-        new QRCode(container, { text: "https://jmmovimento.com.br/checkin.php?e=" + eId, width: 240, height: 240 });
-        new bootstrap.Modal(document.getElementById('modalQr')).show();
-    }
-
-    // Cronômetro
-    <?php if ($ativo): ?>
-        const startTime = new Date("<?= $ativo['inicio'] ?>").getTime();
-        const totalPausaMs = <?= (int)$ativo['total_pausa_segundos'] ?> * 1000;
-        const status = "<?= $ativo['status'] ?>";
-        const pausaInicio = "<?= $ativo['pausa_inicio'] ?>";
+    // RELÓGIO GINCANA PRINCIPAL
+    <?php if ($ativo_gincana): ?>
+        const startTime = new Date("<?= $ativo_gincana['inicio'] ?>").getTime();
+        const totalPausaMs = <?= (int)$ativo_gincana['total_pausa_segundos'] ?> * 1000;
         function relogio() {
-            let diff = (status === 'rodando') ? (new Date().getTime() - startTime) - totalPausaMs : (new Date(pausaInicio).getTime() - startTime) - totalPausaMs;
+            let diff = (new Date().getTime() - startTime) - totalPausaMs;
             if(diff < 0) diff = 0;
-            const h = Math.floor(diff / 3600000).toString().padStart(2, '0');
-            const m = Math.floor((diff % 3600000) / 60000).toString().padStart(2, '0');
-            const s = Math.floor((diff % 60000) / 1000).toString().padStart(2, '0');
-            document.getElementById('cronometro').innerText = `${h}:${m}:${s}`;
+            document.getElementById('cronometro').innerText = new Date(diff).toISOString().substr(11, 8);
         }
-        if(status === 'rodando') setInterval(relogio, 1000);
-        relogio();
+        setInterval(relogio, 1000); relogio();
     <?php endif; ?>
 </script>
 </body>
