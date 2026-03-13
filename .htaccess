@@ -1,0 +1,37 @@
+# 1. CONFIGURAÇÕES GERAIS
+DirectoryIndex index.php index.html
+Options -Indexes
+
+<IfModule mod_mime.c>
+    AddType application/x-httpd-php .php
+</IfModule>
+
+<IfModule mod_env.c>
+    SetEnv PHP_VER 81
+</IfModule>
+
+# 2. REDIRECIONAMENTO
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+
+    # A. FORÇAR HTTPS
+    RewriteCond %{HTTPS} off
+    RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+    # B. SE ACESSAR A RAIZ VAZIA, VAI PARA O SITE
+    RewriteRule ^$ site/index.php [L,R=301]
+
+    # C. REGRAS PARA ARQUIVOS DO SISTEMA NA RAIZ
+    # Se o arquivo existe na raiz (ex: login.php, dashboard.php), abre ele.
+    RewriteCond %{REQUEST_FILENAME} -f
+    RewriteRule ^(.*)$ $1 [L]
+
+    # D. CASO CONTRÁRIO, PROCURA DENTRO DA PASTA /SITE
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^(.*)$ site/$1 [L]
+</IfModule>
+
+# 3. ERROS
+ErrorDocument 404 /site/index.php

@@ -1,0 +1,68 @@
+/* style.css */
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+
+body {
+    background-color: #f0f2f5;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    padding: 20px;
+}
+
+.container {
+    background: #fff;
+    padding: 2rem;
+    border-radius: 10px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    width: 100%;
+    max-width: 400px; /* Tamanho ideal para desktop, ajusta-se no mobile */
+}
+
+h2 { text-align: center; color: #333; margin-bottom: 1.5rem; }
+
+.form-group { margin-bottom: 1rem; position: relative; }
+.form-group label { display: block; margin-bottom: 5px; color: #666; }
+.form-group input {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    font-size: 16px;
+}
+
+/* Botão do Olho */
+.eye-icon {
+    position: absolute;
+    right: 15px;
+    top: 38px;
+    cursor: pointer;
+    color: #888;
+}
+
+button {
+    width: 100%;
+    padding: 12px;
+    background: #007bff;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    font-size: 16px;
+    cursor: pointer;
+    transition: background 0.3s;
+}
+
+button:hover { background: #0056b3; }
+
+.links { text-align: center; margin-top: 15px; font-size: 14px; }
+.links a { color: #007bff; text-decoration: none; }
+.links a:hover { text-decoration: underline; }
+
+.msg { padding: 10px; border-radius: 5px; margin-bottom: 15px; text-align: center; }
+.erro { background: #f8d7da; color: #721c24; }
+.sucesso { background: #d4edda; color: #155724; }
+
+/* Responsividade Extra para telas muito pequenas */
+@media (max-width: 350px) {
+    .container { padding: 1.5rem; }
+}
