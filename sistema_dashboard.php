@@ -101,6 +101,15 @@ $data_acesso = $_SESSION['ultimo_acesso'] ? date('d/m/Y H:i', strtotime($_SESSIO
                 </a>
             </div>
 
+
+           <!-- NOVO MÓDULO: SECRETARIA -->
+            <div class="col-6 col-md-3">
+                <a href="secretaria.php" class="btn-box shadow-sm">
+                    <div class="icon-circle bg-purple text-white shadow-sm"><i class="bi bi-journal-text"></i></div>
+                    <h6 class="fw-bold m-0 small">SECRETARIA</h6>
+                </a>
+            </div>
+
             <!-- USUÁRIOS (ADMIN) -->
             <?php if ($_SESSION['nivel'] === 'admin'): ?>
             <div class="col-6 col-md-3">
