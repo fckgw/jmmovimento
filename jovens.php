@@ -1,98 +1,128 @@
 <?php
 /**
  * JMM SYSTEM - GESTÃO DE JOVENS + OFFLINE + CHECK-IN RÁPIDO
+ * Versão: 2.0 (Garantia de Encontro Ativo e Check-in Automático)
  */
 require_once 'config.php';
 
+// Proteção de Sessão
 if (!isset($_SESSION['user_id'])) {
     header("Location: login.php");
     exit;
 }
 
-// --- CONFIGURAÇÃO DO ENCONTRO ATIVO ---
-$enc_ativo = $pdo->query("SELECT * FROM encontros WHERE ativo = 1 LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-$enc_id_ativo = $enc_ativo['id'] ?? 0;
+// --- 1. CONFIGURAÇÃO DO ENCONTRO ATIVO ---
+// Buscamos o encontro marcado como 'ativo'. 
+// Ordenamos por ID DESC para garantir que, se houver dois ativos por erro, pegue o mais recente.
+$query_encontro = $pdo->query("SELECT * FROM encontros WHERE ativo = 1 ORDER BY id DESC LIMIT 1");
+$enc_ativo = $query_encontro->fetch(PDO::FETCH_ASSOC);
+
+$enc_id_ativo = $enc_ativo['id'] ?? null;
+$nome_encontro_atual = $enc_ativo['nome'] ?? 'Nenhum encontro ativo';
+// O check-in só é habilitado se o encontro existir E o status for 'aberto'
 $pode_checkin = ($enc_ativo && $enc_ativo['status'] == 'aberto');
 
-// --- ESTATÍSTICAS DE GÊNERO ---
+// --- 2. ESTATÍSTICAS DE GÊNERO ---
 $stats_gen = $pdo->query("SELECT 
     COUNT(*) as total,
     SUM(CASE WHEN sexo = 'Masculino' THEN 1 ELSE 0 END) as masc,
     SUM(CASE WHEN sexo = 'Feminino' THEN 1 ELSE 0 END) as fem
-    FROM jovens")->fetch();
+    FROM jovens")->fetch(PDO::FETCH_ASSOC);
 
 $total_geral = $stats_gen['total'] ?: 0;
 $perc_m = ($total_geral > 0) ? round(($stats_gen['masc'] / $total_geral) * 100, 1) : 0;
 $perc_f = ($total_geral > 0) ? round(($stats_gen['fem'] / $total_geral) * 100, 1) : 0;
 
-// --- PAGINAÇÃO E FILTRO ---
-$itens_por_pag = 10;
-$p_atual = isset($_GET['p']) ? (int)$_GET['p'] : 1;
-if ($p_atual < 1) $p_atual = 1;
-$offset = ($p_atual - 1) * $itens_por_pag;
+// --- 3. PAGINAÇÃO E FILTROS ---
+$itens_por_pagina = 10;
+$pagina_atual = isset($_GET['p']) ? (int)$_GET['p'] : 1;
+if ($pagina_atual < 1) $pagina_atual = 1;
+$offset = ($pagina_atual - 1) * $itens_por_pagina;
 
-$f_j = isset($_GET['f_jovem']) ? trim($_GET['f_jovem']) : '';
-$where_j = "WHERE 1=1";
-$params_j = [];
-if ($f_j) { 
-    $where_j .= " AND (nome LIKE ? OR telefone LIKE ?)"; 
-    $params_j[] = "%$f_j%"; $params_j[] = "%$f_j%";
+$filtro_nome = isset($_GET['f_jovem']) ? trim($_GET['f_jovem']) : '';
+$where_query = "WHERE 1=1";
+$parametros_busca = [];
+
+if ($filtro_nome) { 
+    $where_query .= " AND (nome LIKE ? OR telefone LIKE ?)"; 
+    $parametros_busca[] = "%$filtro_nome%"; 
+    $parametros_busca[] = "%$filtro_nome%";
 }
 
-$stmt_count = $pdo->prepare("SELECT COUNT(*) FROM jovens $where_j");
-$stmt_count->execute($params_j);
-$total_paginas = ceil($stmt_count->fetchColumn() / $itens_por_pag);
+// Contagem para paginação
+$stmt_count = $pdo->prepare("SELECT COUNT(*) FROM jovens $where_query");
+$stmt_count->execute($parametros_busca);
+$total_registros = $stmt_count->fetchColumn();
+$total_paginas = ceil($total_registros / $itens_por_pagina);
 
-// --- PROCESSAMENTO DE AÇÕES (POST) ---
+// --- 4. PROCESSAMENTO DE AÇÕES (POST) ---
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['form_acao'])) {
     $acao = $_POST['form_acao'];
 
-    // Salvar Jovem
+    // Ação: Salvar ou Editar Jovem
     if ($acao == 'novo_jovem') {
+        $nome = trim($_POST['nome']);
+        $telefone = trim($_POST['telefone']);
+        $sexo = $_POST['sexo'];
+        $ano_nasc = $_POST['ano_nascimento'];
         $data_nasc = !empty($_POST['data_nascimento']) ? implode('-', array_reverse(explode('/', $_POST['data_nascimento']))) : null;
-        if (!empty($_POST['id_jovem_edit'])) {
-            $pdo->prepare("UPDATE jovens SET nome=?, telefone=?, sexo=?, ano_nascimento=?, data_nascimento=? WHERE id=?")
-                ->execute([trim($_POST['nome']), trim($_POST['telefone']), $_POST['sexo'], $_POST['ano_nascimento'], $data_nasc, $_POST['id_jovem_edit']]);
+        $id_edit = $_POST['id_jovem_edit'];
+
+        if (!empty($id_edit)) {
+            $sql = "UPDATE jovens SET nome=?, telefone=?, sexo=?, ano_nascimento=?, data_nascimento=? WHERE id=?";
+            $pdo->prepare($sql)->execute([$nome, $telefone, $sexo, $ano_nasc, $data_nasc, $id_edit]);
         } else {
-            $pdo->prepare("INSERT INTO jovens (nome, telefone, sexo, ano_nascimento, data_nascimento) VALUES (?, ?, ?, ?, ?)")
-                ->execute([trim($_POST['nome']), trim($_POST['telefone']), $_POST['sexo'], $_POST['ano_nascimento'], $data_nasc]);
+            $sql = "INSERT INTO jovens (nome, telefone, sexo, ano_nascimento, data_nascimento) VALUES (?, ?, ?, ?, ?)";
+            $pdo->prepare($sql)->execute([$nome, $telefone, $sexo, $ano_nasc, $data_nasc]);
         }
     }
 
-    // Toggle Check-in Direto
-    if ($acao == 'toggle_presenca') {
-        $j_id = $_POST['j_id'];
-        $e_id = $_POST['e_id'];
-        if ($pode_checkin) {
-            $check = $pdo->prepare("SELECT id FROM presencas WHERE jovem_id = ? AND encontro_id = ?");
-            $check->execute([$j_id, $e_id]);
-            if ($check->fetch()) {
-                $pdo->prepare("DELETE FROM presencas WHERE jovem_id = ? AND encontro_id = ?")->execute([$j_id, $e_id]);
-            } else {
-                $pdo->prepare("INSERT INTO presencas (jovem_id, encontro_id) VALUES (?, ?)")->execute([$j_id, $e_id]);
-                $sj = $pdo->prepare("SELECT nome FROM jovens WHERE id = ?"); $sj->execute([$j_id]);
-                $confirm_nome = $sj->fetchColumn();
-                header("Location: jovens.php?p=$p_atual&f_jovem=$f_j&checkok=".urlencode($confirm_nome)); exit;
-            }
+    // Ação: Toggle Presença (Check-in Direto)
+    if ($acao == 'toggle_presenca' && $pode_checkin) {
+        $jovem_id = $_POST['j_id'];
+        $encontro_id = $enc_id_ativo;
+
+        // Verifica se já existe a presença
+        $check_presenca = $pdo->prepare("SELECT id FROM presencas WHERE jovem_id = ? AND encontro_id = ?");
+        $check_presenca->execute([$jovem_id, $encontro_id]);
+        
+        if ($check_presenca->fetch()) {
+            // Se já existe, remove (desmarcar)
+            $pdo->prepare("DELETE FROM presencas WHERE jovem_id = ? AND encontro_id = ?")->execute([$jovem_id, $encontro_id]);
+        } else {
+            // Se não existe, insere (marcar check-in)
+            $pdo->prepare("INSERT INTO presencas (jovem_id, encontro_id) VALUES (?, ?)")->execute([$jovem_id, $encontro_id]);
+            
+            // Busca o nome para o modal de sucesso
+            $stmt_nome = $pdo->prepare("SELECT nome FROM jovens WHERE id = ?");
+            $stmt_nome->execute([$jovem_id]);
+            $nome_confirmado = $stmt_nome->fetchColumn();
+            
+            header("Location: jovens.php?p=$pagina_atual&f_jovem=$filtro_nome&checkok=" . urlencode($nome_confirmado));
+            exit;
         }
     }
 
-    // Deletar
+    // Ação: Deletar Jovem
     if ($acao == 'deletar_jovem') {
-        $pdo->prepare("DELETE FROM presencas WHERE jovem_id = ?")->execute([$_POST['id_jovem']]);
-        $pdo->prepare("DELETE FROM jovens WHERE id = ?")->execute([$_POST['id_jovem']]);
+        $id_del = $_POST['id_jovem'];
+        $pdo->prepare("DELETE FROM presencas WHERE jovem_id = ?")->execute([$id_del]);
+        $pdo->prepare("DELETE FROM jovens WHERE id = ?")->execute([$id_del]);
     }
 
-    header("Location: jovens.php?p=$p_atual&f_jovem=$f_j");
+    header("Location: jovens.php?p=$pagina_atual&f_jovem=$filtro_nome");
     exit;
 }
 
-// --- CONSULTA DA LISTA ---
-$sql_list = "SELECT j.*, (SELECT id FROM presencas WHERE jovem_id = j.id AND encontro_id = ?) as presenca_hoje 
-             FROM jovens j $where_j ORDER BY j.nome ASC LIMIT $offset, $itens_por_pag";
-$stmt_l = $pdo->prepare($sql_list);
-$stmt_l->execute(array_merge([$enc_id_ativo], $params_j));
-$jovens = $stmt_l->fetchAll(PDO::FETCH_ASSOC);
+// --- 5. CONSULTA DA LISTA DE JOVENS ---
+// Seleciona os jovens e verifica se cada um tem presença no encontro ativo selecionado acima
+$sql_lista = "SELECT j.*, 
+             (SELECT id FROM presencas WHERE jovem_id = j.id AND encontro_id = ?) as presenca_hoje 
+             FROM jovens j $where_query ORDER BY j.nome ASC LIMIT $offset, $itens_por_pagina";
+
+$stmt_lista = $pdo->prepare($sql_lista);
+$stmt_lista->execute(array_merge([$enc_id_ativo], $parametros_busca));
+$jovens = $stmt_lista->fetchAll(PDO::FETCH_ASSOC);
 ?>
 <!DOCTYPE html>
 <html lang="pt-br">
@@ -104,90 +134,142 @@ $jovens = $stmt_l->fetchAll(PDO::FETCH_ASSOC);
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
     <style>
-        body { background-color: #f4f7f6; font-family: 'Segoe UI', sans-serif; }
-        .stat-box { font-size: 0.8rem; font-weight: bold; border-radius: 10px; border: none; }
-        .btn-checkin-lista { font-size: 1.5rem; border: none; background: none; transition: 0.2s; }
-        .btn-checkin-lista:active { transform: scale(1.2); }
-        .offline-indicator { display: none; position: fixed; top: 0; width: 100%; z-index: 10000; text-align: center; background: #ffc107; font-size: 0.7rem; font-weight: bold; }
+        body { background-color: #f4f7f6; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .stat-box { font-size: 0.85rem; font-weight: bold; border-radius: 12px; border: none; }
+        .btn-checkin-lista { font-size: 1.6rem; border: none; background: none; transition: transform 0.2s; padding: 0; line-height: 1; }
+        .btn-checkin-lista:active { transform: scale(1.3); }
+        .offline-indicator { display: none; position: fixed; top: 0; width: 100%; z-index: 10000; text-align: center; background: #ffc107; font-size: 0.75rem; font-weight: bold; padding: 5px 0; }
+        .card-custom { border-radius: 15px; border: none; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        .table-custom { background: white; border-radius: 15px; overflow: hidden; }
     </style>
 </head>
 <body class="pb-5">
 
-<div id="offline-msg" class="offline-indicator py-1">VOCÊ ESTÁ OFFLINE - DADOS SERÃO SALVOS LOCALMENTE</div>
+<div id="offline-msg" class="offline-indicator">VOCÊ ESTÁ SEM INTERNET - DADOS SENDO MANIPULADOS LOCALMENTE</div>
 
 <?php include 'navbar.php'; ?>
 
-<div class="container">
+<div class="container mt-3">
     
-    <!-- ESTATÍSTICAS -->
+    <!-- STATUS DO ENCONTRO ATIVO -->
+    <div class="alert <?= $pode_checkin ? 'alert-success' : 'alert-warning' ?> card-custom py-2 mb-3 d-flex justify-content-between align-items-center">
+        <div>
+            <small class="d-block text-uppercase fw-bold" style="font-size: 0.65rem;">Encontro Selecionado:</small>
+            <span class="fw-bold"><?= $nome_encontro_atual ?></span>
+        </div>
+        <div class="text-end">
+            <span class="badge <?= $pode_checkin ? 'bg-success' : 'bg-secondary' ?> text-uppercase">
+                <?= $pode_checkin ? 'Check-in Aberto' : 'Check-in Fechado' ?>
+            </span>
+        </div>
+    </div>
+
+    <!-- ESTATÍSTICAS RÁPIDAS -->
     <div class="row g-2 mb-3">
         <div class="col-6">
-            <div class="card stat-box p-2 text-center bg-primary text-white shadow-sm">
-                MASC: <?=$stats_gen['masc']?> (<?=$perc_m?>%)
+            <div class="card stat-box p-3 text-center bg-primary text-white shadow-sm">
+                MASCULINO: <?=$stats_gen['masc']?> <br> <small><?=$perc_m?>%</small>
             </div>
         </div>
         <div class="col-6">
-            <div class="card stat-box p-2 text-center bg-danger text-white shadow-sm">
-                FEM: <?=$stats_gen['fem']?> (<?=$perc_f?>%)
+            <div class="card stat-box p-3 text-center bg-danger text-white shadow-sm">
+                FEMININO: <?=$stats_gen['fem']?> <br> <small><?=$perc_f?>%</small>
             </div>
         </div>
     </div>
 
-    <!-- FORMULÁRIO -->
-    <div class="card p-3 border-0 shadow-sm rounded-4 mb-3">
-        <h6 class="fw-bold mb-3" id="t_form">Cadastrar Jovem</h6>
+    <!-- FORMULÁRIO DE CADASTRO E EDIÇÃO -->
+    <div class="card p-3 card-custom mb-3">
+        <h6 class="fw-bold mb-3" id="titulo_formulario">Cadastrar Novo Jovem</h6>
         <form method="POST" id="main-form">
             <input type="hidden" name="form_acao" value="novo_jovem">
-            <input type="hidden" name="id_jovem_edit" id="id_j_e">
-            <input type="text" name="nome" id="j_n" class="form-control mb-2 text-uppercase" placeholder="Nome Completo" required>
+            <input type="hidden" name="id_jovem_edit" id="id_jovem_edit">
+            
+            <input type="text" name="nome" id="campo_nome" class="form-control mb-2 text-uppercase" placeholder="Nome Completo" required>
+            
             <div class="row g-2 mb-2">
-                <div class="col-6"><select name="sexo" id="j_s" class="form-select" required><option value="">Sexo...</option><option value="Masculino">Masculino</option><option value="Feminino">Feminino</option></select></div>
-                <div class="col-6"><input type="number" name="ano_nascimento" id="j_a" class="form-control" placeholder="Ano Nasc."></div>
+                <div class="col-6">
+                    <select name="sexo" id="campo_sexo" class="form-select" required>
+                        <option value="">Gênero...</option>
+                        <option value="Masculino">Masculino</option>
+                        <option value="Feminino">Feminino</option>
+                    </select>
+                </div>
+                <div class="col-6">
+                    <input type="number" name="ano_nascimento" id="campo_ano" class="form-control" placeholder="Ano Nasc.">
+                </div>
             </div>
+            
             <div class="row g-2 mb-2">
-                <div class="col-7"><input type="text" name="data_nascimento" id="j_d" class="form-control" placeholder="DD/MM/AAAA" onkeyup="maskData(this)" maxlength="10"></div>
-                <div class="col-5"><input type="text" name="telefone" id="j_t" class="form-control" placeholder="WhatsApp"></div>
+                <div class="col-7">
+                    <input type="text" name="data_nascimento" id="campo_data" class="form-control" placeholder="Data DD/MM/AAAA" onkeyup="mascaraData(this)" maxlength="10">
+                </div>
+                <div class="col-5">
+                    <input type="text" name="telefone" id="campo_telefone" class="form-control" placeholder="WhatsApp">
+                </div>
             </div>
-            <button type="submit" class="btn btn-dark w-100 fw-bold shadow-sm">SALVAR JOVEM</button>
-            <button type="button" id="btn-cancel" class="btn btn-light w-100 mt-2 d-none" onclick="location.reload()">CANCELAR EDIÇÃO</button>
+            
+            <button type="submit" class="btn btn-dark w-100 fw-bold shadow-sm py-2">SALVAR INFORMAÇÕES</button>
+            <button type="button" id="btn-cancelar" class="btn btn-light w-100 mt-2 d-none" onclick="location.reload()">CANCELAR EDIÇÃO</button>
         </form>
     </div>
 
-    <!-- FILTRO -->
+    <!-- BARRA DE BUSCA -->
     <form method="GET" class="d-flex gap-2 mb-3">
-        <input type="text" name="f_jovem" class="form-control shadow-sm" placeholder="Buscar por nome..." value="<?=$f_j?>">
-        <button type="submit" class="btn btn-dark"><i class="bi bi-search"></i></button>
+        <input type="text" name="f_jovem" class="form-control shadow-sm border-0" placeholder="Buscar jovem por nome..." value="<?=$filtro_nome?>">
+        <button type="submit" class="btn btn-dark shadow-sm"><i class="bi bi-search"></i></button>
     </form>
 
-    <!-- LISTA COM CHECK-IN -->
+    <!-- TABELA DE JOVENS COM CHECK-IN -->
     <div class="table-responsive">
-        <table class="table table-sm bg-white border align-middle shadow-sm rounded-3">
+        <table class="table table-sm align-middle table-custom shadow-sm">
+            <thead class="table-light">
+                <tr>
+                    <th class="ps-3 py-2" style="font-size: 0.75rem;">JOVEM</th>
+                    <th class="text-end pe-3" style="font-size: 0.75rem;">AÇÕES / CHECK-IN</th>
+                </tr>
+            </thead>
             <tbody>
+                <?php if(empty($jovens)): ?>
+                    <tr><td colspan="2" class="text-center py-4 text-muted">Nenhum registro encontrado.</td></tr>
+                <?php endif; ?>
+
                 <?php foreach($jovens as $j): ?>
                 <tr>
                     <td class="ps-3 py-2">
-                        <div class="fw-bold small text-uppercase"><?=$j['nome']?></div>
-                        <small class="text-muted" style="font-size: 0.7rem;"><?=$j['sexo']?> | <?=($j['data_nascimento']?date('d/m/Y',strtotime($j['data_nascimento'])):$j['ano_nascimento'])?></small>
+                        <div class="fw-bold text-uppercase" style="font-size: 0.85rem;"><?=$j['nome']?></div>
+                        <small class="text-muted" style="font-size: 0.7rem;">
+                            <?=$j['sexo']?> | <?= ($j['data_nascimento'] ? date('d/m/Y', strtotime($j['data_nascimento'])) : ($j['ano_nascimento'] ?: '---')) ?>
+                        </small>
                     </td>
                     <td class="text-end pe-3 text-nowrap">
-                        <!-- BOTÃO CHECK-IN DIRETO -->
+                        <!-- LÓGICA DO BOTÃO DE CHECK-IN -->
                         <?php if($pode_checkin): ?>
                         <form method="POST" class="d-inline">
                             <input type="hidden" name="form_acao" value="toggle_presenca">
                             <input type="hidden" name="j_id" value="<?=$j['id']?>">
-                            <input type="hidden" name="e_id" value="<?=$enc_id_ativo?>">
-                            <button type="submit" class="btn-checkin-lista">
+                            <button type="submit" class="btn-checkin-lista me-2">
                                 <i class="bi <?= $j['presenca_hoje'] ? 'bi-person-check-fill text-success' : 'bi-person-check text-muted' ?>"></i>
                             </button>
                         </form>
+                        <?php else: ?>
+                            <!-- Ícone apenas visual se o check-in estiver fechado -->
+                            <?php if($j['presenca_hoje']): ?>
+                                <i class="bi bi-person-check-fill text-success fs-4 me-2 opacity-50"></i>
+                            <?php endif; ?>
                         <?php endif; ?>
 
-                        <!-- BOTÕES DE GESTÃO -->
-                        <button class="btn btn-link text-primary p-0 mx-2" onclick='povJ(<?=json_encode($j)?>)'><i class="bi bi-pencil-square fs-5"></i></button>
-                        <form method="POST" class="d-inline" onsubmit="return confirm('Excluir permanentemente?')">
+                        <!-- EDIÇÃO E EXCLUSÃO -->
+                        <button class="btn btn-link text-primary p-0 mx-2" onclick='preencherEdicao(<?=json_encode($j)?>)'>
+                            <i class="bi bi-pencil-square fs-5"></i>
+                        </button>
+                        
+                        <form method="POST" class="d-inline" onsubmit="return confirm('Deseja excluir este registro permanentemente?')">
                             <input type="hidden" name="form_acao" value="deletar_jovem">
                             <input type="hidden" name="id_jovem" value="<?=$j['id']?>">
-                            <button type="submit" class="btn btn-link text-danger p-0"><i class="bi bi-trash fs-5"></i></button>
+                            <button type="submit" class="btn btn-link text-danger p-0">
+                                <i class="bi bi-trash fs-5"></i>
+                            </button>
                         </form>
                     </td>
                 </tr>
@@ -197,53 +279,93 @@ $jovens = $stmt_l->fetchAll(PDO::FETCH_ASSOC);
     </div>
 
     <!-- PAGINAÇÃO -->
-    <nav><ul class="pagination pagination-sm justify-content-center">
-        <?php for($i=1; $i<=$total_paginas; $i++): ?>
-            <li class="page-item <?=($p_atual==$i)?'active':''?>"><a class="page-link" href="?p=<?=$i?>&f_jovem=<?=urlencode($f_j)?>"><?=$i?></a></li>
-        <?php endfor; ?>
-    </ul></nav>
+    <?php if($total_paginas > 1): ?>
+    <nav>
+        <ul class="pagination pagination-sm justify-content-center mt-3">
+            <?php for($i=1; $i<=$total_paginas; $i++): ?>
+                <li class="page-item <?=($pagina_atual == $i) ? 'active' : ''?>">
+                    <a class="page-link" href="?p=<?=$i?>&f_jovem=<?=urlencode($filtro_nome)?>"><?=$i?></a>
+                </li>
+            <?php endfor; ?>
+        </ul>
+    </nav>
+    <?php endif; ?>
 
 </div>
 
-<!-- MODAL SUCESSO -->
-<div class="modal fade" id="modalSucesso" tabindex="-1"><div class="modal-dialog modal-dialog-centered"><div class="modal-content text-center p-4 border-0 shadow-lg"><div class="modal-body"><i class="bi bi-check-circle-fill text-success" style="font-size: 3rem;"></i><h5 class="fw-bold mt-3">Confirmado!</h5><p id="n_j_s" class="text-uppercase fw-bold text-primary"></p><button type="button" class="btn btn-dark w-100 rounded-pill" data-bs-dismiss="modal">OK</button></div></div></div></div>
+<!-- MODAL DE SUCESSO NO CHECK-IN -->
+<div class="modal fade" id="modalSucesso" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content text-center p-4 border-0 shadow-lg" style="border-radius: 20px;">
+            <div class="modal-body">
+                <i class="bi bi-check-circle-fill text-success" style="font-size: 4rem;"></i>
+                <h5 class="fw-bold mt-3">Presença Confirmada!</h5>
+                <p id="nome_jovem_sucesso" class="text-uppercase fw-bold text-primary"></p>
+                <button type="button" class="btn btn-dark w-100 rounded-pill py-2 mt-2" data-bs-dismiss="modal">CONCLUÍDO</button>
+            </div>
+        </div>
+    </div>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    // Registro do Service Worker para Offline
-    if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
-
-    function maskData(i) {
-        let v = i.value.replace(/\D/g,'');
-        if(v.length > 2) v = v.substring(0,2) + '/' + v.substring(2);
-        if(v.length > 5) v = v.substring(0,5) + '/' + v.substring(5,9);
-        i.value = v;
-        if(v.length == 10) document.getElementById('j_a').value = v.split('/')[2];
+    // Registro de Service Worker para PWA/Offline
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('sw.js').catch(err => console.log("Erro SW:", err));
     }
 
-    function povJ(j) {
-        document.getElementById('id_j_e').value = j.id;
-        document.getElementById('j_n').value = j.nome;
-        document.getElementById('j_s').value = j.sexo;
-        document.getElementById('j_a').value = j.ano_nascimento;
-        document.getElementById('j_t').value = j.telefone;
-        if(j.data_nascimento) { let d = j.data_nascimento.split('-'); document.getElementById('j_d').value = d[2]+'/'+d[1]+'/'+d[0]; }
-        document.getElementById('t_form').innerText = "Editar Jovem";
-        document.getElementById('btn-cancel').classList.remove('d-none');
-        window.scrollTo(0,0);
+    // Máscara Simples para Data
+    function mascaraData(input) {
+        let valor = input.value.replace(/\D/g,'');
+        if(valor.length > 2) valor = valor.substring(0,2) + '/' + valor.substring(2);
+        if(valor.length > 5) valor = valor.substring(0,5) + '/' + valor.substring(5,9);
+        input.value = valor;
+        
+        // Se preencher a data completa, tenta sugerir o ano no campo ao lado
+        if(valor.length === 10) {
+            document.getElementById('campo_ano').value = valor.split('/')[2];
+        }
     }
 
-    // Monitor de Conexão
-    window.addEventListener('offline', () => document.getElementById('offline-msg').style.display = 'block');
-    window.addEventListener('online', () => document.getElementById('offline-msg').style.display = 'none');
+    // Função para preencher o formulário de edição
+    function preencherEdicao(jovem) {
+        document.getElementById('id_jovem_edit').value = jovem.id;
+        document.getElementById('campo_nome').value = jovem.nome;
+        document.getElementById('campo_sexo').value = jovem.sexo;
+        document.getElementById('campo_ano').value = jovem.ano_nascimento;
+        document.getElementById('campo_telefone').value = jovem.telefone;
+        
+        if(jovem.data_nascimento) {
+            let partes = jovem.data_nascimento.split('-');
+            document.getElementById('campo_data').value = partes[2] + '/' + partes[1] + '/' + partes[0];
+        } else {
+            document.getElementById('campo_data').value = '';
+        }
+        
+        document.getElementById('titulo_formulario').innerText = "Editar Cadastro do Jovem";
+        document.getElementById('btn-cancelar').classList.remove('d-none');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
 
-    // Pop-up Sucesso
+    // Monitoramento de conexão
+    window.addEventListener('offline', () => {
+        document.getElementById('offline-msg').style.display = 'block';
+    });
+    window.addEventListener('online', () => {
+        document.getElementById('offline-msg').style.display = 'none';
+    });
+
+    // Exibir Modal de Sucesso após Check-in
     document.addEventListener("DOMContentLoaded", function() {
-        const urlParams = new URLSearchParams(window.location.search);
-        const checkOk = urlParams.get('checkok');
+        const parametros = new URLSearchParams(window.location.search);
+        const checkOk = parametros.get('checkok');
         if(checkOk) {
-            document.getElementById('n_j_s').innerText = checkOk;
-            new bootstrap.Modal(document.getElementById('modalSucesso')).show();
+            document.getElementById('nome_jovem_sucesso').innerText = checkOk;
+            const meuModal = new bootstrap.Modal(document.getElementById('modalSucesso'));
+            meuModal.show();
+            
+            // Limpa a URL após exibir o modal para não repetir ao atualizar
+            window.history.replaceState({}, document.title, window.location.pathname + window.location.search.replace(/[?&]checkok=[^&]+/, ""));
         }
     });
 </script>
