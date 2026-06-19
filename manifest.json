@@ -1,7 +1,7 @@
 {
-  "name": "JMM System Offline",
+  "name": "JMM System Master",
   "short_name": "JMM",
-  "start_url": "jovens.php",
+  "start_url": "gincana.php",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#0d6efd",

@@ -116,7 +116,7 @@ $enc_ativo = $pdo->query("SELECT tema, status FROM encontros WHERE ativo = 1 LIM
         <div class="col-6 col-md-3 col-lg-2"><a href="chamada.php" class="menu-card c-chamada shadow-sm"><div class="icon-circle bg-success text-white"><i class="bi bi-qr-code-scan"></i></div><h6 class="fw-bold small mb-0">CHAMADA</h6></a></div>
         
         <!-- JOVENS -->
-        <div class="col-6 col-md-3 col-lg-2"><a href="jovens.php" class="menu-card c-jovens shadow-sm"><div class="icon-circle bg-info text-white"><i class="bi bi-person-vcard-fill"></i></div><h6 class="fw-bold small mb-0">JOVENS</h6></a></div>
+        <div class="col-6 col-md-3 col-lg-2"><a href="gincana.php?tab=jovens" class="menu-card c-jovens shadow-sm"><div class="icon-circle bg-info text-white"><i class="bi bi-person-vcard-fill"></i></div><h6 class="fw-bold small mb-0">JOVENS</h6></a></div>
         
         <!-- ENCONTROS -->
         <div class="col-6 col-md-3 col-lg-2"><a href="encontros.php" class="menu-card c-enc shadow-sm"><div class="icon-circle bg-warning text-white"><i class="bi bi-calendar-check-fill"></i></div><h6 class="fw-bold small mb-0">ENCONTROS</h6></a></div>
