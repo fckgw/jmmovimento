@@ -133,15 +133,33 @@ $enc_ativo = $pdo->query("SELECT tema, status FROM encontros WHERE ativo = 1 LIM
         <!-- SECRETARIA -->
         <div class="col-6 col-md-3 col-lg-2"><a href="secretaria.php" class="menu-card c-secretaria shadow-sm"><div class="icon-circle text-white" style="background-color: #fd7e14 !important;"><i class="bi bi-briefcase-fill"></i></div><h6 class="fw-bold small mb-0">SECRETARIA</h6></a></div>
 
-        <!-- FINANCEIRO (NOVO) -->
+        <!-- FINANCEIRO -->
         <div class="col-6 col-md-3 col-lg-2"><a href="financeiro.php" class="menu-card c-financeiro shadow-sm"><div class="icon-circle text-white" style="background-color: #20c997 !important;"><i class="bi bi-cash-stack"></i></div><h6 class="fw-bold small mb-0">FINANCEIRO</h6></a></div>
 
-        <!-- FLUXO / RELATÓRIO FINANCEIRO (NOVO) -->
+        <!-- FLUXO -->
         <div class="col-6 col-md-3 col-lg-2"><a href="fluxo.php" class="menu-card c-fluxo shadow-sm"><div class="icon-circle text-white" style="background-color: #6f42c1 !important;"><i class="bi bi-bar-chart-line-fill"></i></div><h6 class="fw-bold small mb-0">FLUXO</h6></a></div>
 
-        <!-- LOGS -->
+        <!-- BLOCO NOVOS (ADMIN) -->
         <?php if($user_nivel == 'admin'): ?>
-            <div class="col-6 col-md-3 col-lg-2"><a href="logs.php" class="menu-card c-logs shadow-sm"><div class="icon-circle bg-secondary text-white"><i class="bi bi-journal-text"></i></div><h6 class="fw-bold small mb-0">LOGS</h6></a></div>
+            <!-- USUÁRIOS -->
+            <div class="col-6 col-md-3 col-lg-2">
+                <a href="usuarios.php" class="menu-card c-usuarios shadow-sm">
+                    <div class="icon-circle bg-primary text-white">
+                        <i class="bi bi-person-gear"></i>
+                    </div>
+                    <h6 class="fw-bold small mb-0">USUÁRIOS</h6>
+                </a>
+            </div>
+
+            <!-- LOGS -->
+            <div class="col-6 col-md-3 col-lg-2">
+                <a href="logs.php" class="menu-card c-logs shadow-sm">
+                    <div class="icon-circle bg-secondary text-white">
+                        <i class="bi bi-journal-text"></i>
+                    </div>
+                    <h6 class="fw-bold small mb-0">LOGS</h6>
+                </a>
+            </div>
         <?php endif; ?>
     </div>
 
