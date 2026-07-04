@@ -1,7 +1,7 @@
 <?php
 /**
- * JMM SYSTEM - MASTER v7.3
- * FOCO: RESTAURAÇÃO TOTAL (BOTÃO EXCLUIR + CADASTRO + FILTROS) + PDF PERSONALIZADO
+ * JMM SYSTEM - MASTER v7.8
+ * FOCO: RESTAURAÇÃO TOTAL UI (FILTROS/LIMPAR) + DESTAQUE NIVER HOJE + VALIDAÇÃO 11 DÍGITOS
  */
 require_once 'config.php';
 
@@ -22,6 +22,12 @@ function calcularIdade($data_nasc, $ano_nasc) {
     return $ano_nasc ? (date('Y') - $ano_nasc) : '??';
 }
 
+// --- FUNÇÃO VALIDAÇÃO TELEFONE (11 DÍGITOS) ---
+function isTelefoneInvalido($fone) {
+    $limpo = preg_replace('/\D/', '', $fone);
+    return (strlen($limpo) !== 11);
+}
+
 // --- 1. CONFIGURAÇÃO DO ENCONTRO ATIVO ---
 $query_ativo = $pdo->query("SELECT * FROM encontros WHERE ativo = 1 ORDER BY id DESC LIMIT 1");
 $enc_ativo = $query_ativo->fetch(PDO::FETCH_ASSOC);
@@ -31,31 +37,20 @@ $pode_checkin = ($enc_ativo && $enc_ativo['status'] == 'aberto');
 $nome_enc_atual = $enc_ativo['tema'] ?? 'Nenhum encontro ativo';
 $data_enc_atual = $enc_ativo['data_encontro'] ?? date('Y-m-d');
 
-// --- 2. LÓGICA DE ANIVERSARIANTES (BASE DO ÚLTIMO ENCONTRO PASSADO) ---
+// --- 2. LÓGICA DE ANIVERSARIANTES ---
 $st_ant = $pdo->prepare("SELECT data_encontro FROM encontros WHERE data_encontro < ? ORDER BY data_encontro DESC LIMIT 1");
 $st_ant->execute([$data_enc_atual]);
 $enc_anterior = $st_ant->fetch();
-
-// Inicia no dia seguinte ao encontro anterior
 $data_inicio_periodo = $enc_anterior ? date('Y-m-d', strtotime($enc_anterior['data_encontro'] . ' +1 day')) : date('Y-m-d', strtotime($data_enc_atual . ' -6 days'));
 
-$sql_niver = "SELECT *, DATE_FORMAT(data_nascimento, '%d/%m/%Y') as data_completa,
-              DATE_FORMAT(data_nascimento, '%m-%d') as mes_dia
-              FROM jovens 
-              WHERE DATE_FORMAT(data_nascimento, '%m-%d') 
-              BETWEEN DATE_FORMAT(?, '%m-%d') AND DATE_FORMAT(?, '%m-%d')
-              ORDER BY mes_dia ASC, nome ASC";
+$sql_niver = "SELECT *, DATE_FORMAT(data_nascimento, '%d/%m/%Y') as data_completa, DATE_FORMAT(data_nascimento, '%m-%d') as mes_dia FROM jovens WHERE DATE_FORMAT(data_nascimento, '%m-%d') BETWEEN DATE_FORMAT(?, '%m-%d') AND DATE_FORMAT(?, '%m-%d') ORDER BY mes_dia ASC, nome ASC";
 $st_niver = $pdo->prepare($sql_niver);
 $st_niver->execute([$data_inicio_periodo, $data_enc_atual]);
 $aniversariantes_periodo = $st_niver->fetchAll(PDO::FETCH_ASSOC);
 $total_niver_periodo = count($aniversariantes_periodo);
-
-// Variáveis para o PDF
-$periodo_pdf_nome = date('d-m', strtotime($data_inicio_periodo)) . "_a_" . date('d-m', strtotime($data_enc_atual));
 $periodo_texto_pdf = date('d/m/Y', strtotime($data_inicio_periodo)) . " até " . date('d/m/Y', strtotime($data_enc_atual));
 
-// --- 3. TOTAIS E ESTATÍSTICAS ---
-$total_cad = $pdo->query("SELECT COUNT(*) FROM jovens")->fetchColumn() ?: 0;
+// --- 3. ESTATÍSTICAS DE PRESENTES ---
 $total_pres = 0;
 $lista_p = [];
 $stats_presenca_hoje = ['masc' => 0, 'fem' => 0];
@@ -70,6 +65,7 @@ if ($enc_id_ativo) {
         if ($p_item['sexo'] == 'Feminino') $stats_presenca_hoje['fem']++;
     }
 }
+$total_cad = $pdo->query("SELECT COUNT(*) FROM jovens")->fetchColumn() ?: 0;
 
 // --- 4. FILTROS E PAGINAÇÃO ---
 $itens_p = 15;
@@ -88,8 +84,7 @@ if ($f_j) {
         if (count($partes) >= 2) { $where .= " AND DATE_FORMAT(data_nascimento, '%d/%m') = ?"; $params[] = str_pad($partes[0], 2, "0", STR_PAD_LEFT)."/".str_pad($partes[1], 2, "0", STR_PAD_LEFT); }
     } else {
         $f_j_limpo = preg_replace('/\D/', '', $f_j);
-        $where .= " AND (nome LIKE ? OR telefone LIKE ? OR DATE_FORMAT(data_nascimento, '%d/%m') LIKE ?)";
-        $params[] = "%$f_j%"; $params[] = "%$f_j_limpo%"; $params[] = "%$f_j%";
+        $where .= " AND (nome LIKE ? OR telefone LIKE ?)"; $params[] = "%$f_j%"; $params[] = "%$f_j_limpo%";
     }
 }
 $st_ct = $pdo->prepare("SELECT COUNT(*) FROM jovens $where");
@@ -114,13 +109,14 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['form_acao'])) {
         header("Location: gincana.php?tab=jovens&delok=1"); exit;
     }
     if ($acao == 'novo_jovem') {
-        $id_j = $_POST['id_jovem_edit'] ?? null;
         $fone = preg_replace('/\D/', '', $_POST['telefone']);
+        if(strlen($fone) !== 11) { header("Location: gincana.php?tab=jovens&erro_fone=1"); exit; }
+        $nome_salvar = trim($_POST['nome']);
         $data_n = !empty($_POST['data_nascimento']) ? implode('-', array_reverse(explode('/', $_POST['data_nascimento']))) : null;
-        $val = [trim($_POST['nome']), $fone, $_POST['sexo'], (int)$_POST['ano_nascimento'], $data_n, str_replace('@','',$_POST['instagram'] ?? ''), $_POST['irmaos'] ?? 'Não'];
-        if ($id_j) { $val[] = $id_j; $pdo->prepare("UPDATE jovens SET nome=?, telefone=?, sexo=?, ano_nascimento=?, data_nascimento=?, instagram=?, irmaos=? WHERE id=?")->execute($val); }
+        $val = [$nome_salvar, $fone, $_POST['sexo'], (int)$_POST['ano_nascimento'], $data_n, str_replace('@','',$_POST['instagram'] ?? ''), $_POST['irmaos'] ?? 'Não'];
+        if (!empty($_POST['id_jovem_edit'])) { $val[] = $_POST['id_jovem_edit']; $pdo->prepare("UPDATE jovens SET nome=?, telefone=?, sexo=?, ano_nascimento=?, data_nascimento=?, instagram=?, irmaos=? WHERE id=?")->execute($val); }
         else { $pdo->prepare("INSERT INTO jovens (nome, telefone, sexo, ano_nascimento, data_nascimento, instagram, irmaos) VALUES (?, ?, ?, ?, ?, ?, ?)")->execute($val); }
-        header("Location: gincana.php?tab=jovens&saveok=" . urlencode($_POST['nome'])); exit;
+        header("Location: gincana.php?tab=jovens&saveok=" . urlencode($nome_salvar)); exit;
     }
 }
 
@@ -137,7 +133,7 @@ $jovens_exibicao = $st_ex->fetchAll(PDO::FETCH_ASSOC);
 <html lang="pt-br">
 <head>
     <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>JMM Master - Jovens</title>
+    <title>JMM Master</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -151,8 +147,11 @@ $jovens_exibicao = $st_ex->fetchAll(PDO::FETCH_ASSOC);
         .bg-niver-card { background: #fff3cd; border-left: 5px solid #ffc107 !important; cursor: pointer; }
         .filter-section { background: #fff; border-radius: 15px; padding: 15px; border-left: 5px solid #212529; }
         .niver-hoje { border: 2px solid #ffc107 !important; background: #fffdf5; position: relative; }
-        .badge-hoje { position: absolute; top: -10px; right: 10px; background: #ffc107; color: #000; font-size: 10px; padding: 3px 8px; border-radius: 10px; font-weight: 800; }
+        .badge-hoje { position: absolute; top: -10px; right: 10px; background: #ffc107; color: #000; font-size: 10px; padding: 3px 8px; border-radius: 10px; font-weight: 800; animation: pulse 1.5s infinite; }
         .btn-checkin-lista { font-size: 1.6rem; border: none; background: none; }
+        .fone-error-icon { animation: blink 1s infinite; font-size: 1.1rem; }
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
     </style>
 </head>
 <body>
@@ -170,7 +169,7 @@ $jovens_exibicao = $st_ex->fetchAll(PDO::FETCH_ASSOC);
     <div class="row g-2 mb-3 text-center">
         <div class="col-4"><div class="card p-2 border-start border-5 border-primary"><small class="label-small">Cadastrados</small><h4 class="fw-bold mb-0 text-primary"><?=$total_cad?></h4></div></div>
         <div class="col-4" style="cursor:pointer;" data-bs-toggle="modal" data-bs-target="#modalPresentes"><div class="card p-2 border-start border-5 border-success"><small class="label-small">Presentes Hoje</small><h4 class="fw-bold mb-0 text-success"><?=$total_pres?></h4></div></div>
-        <div class="col-4" data-bs-toggle="modal" data-bs-target="#modalNiverEncontro"><div class="card p-2 bg-niver-card"><small class="label-small text-warning">Aniversariantes Semana Anterior</small><h4 class="fw-bold mb-0 text-dark"><?=$total_niver_periodo?></h4></div></div>
+        <div class="col-4" style="cursor:pointer;" data-bs-toggle="modal" data-bs-target="#modalNiverEncontro"><div class="card p-2 bg-niver-card"><small class="label-small text-warning">Aniversariantes</small><h4 class="fw-bold mb-0 text-dark"><?=$total_niver_periodo?></h4></div></div>
     </div>
     
     <ul class="nav nav-pills nav-fill mb-4 bg-white p-1 rounded shadow-sm" id="pills-tab">
@@ -181,23 +180,23 @@ $jovens_exibicao = $st_ex->fetchAll(PDO::FETCH_ASSOC);
     <div class="tab-content">
         <!-- ABA CHAMADA -->
         <div class="tab-pane fade show active" id="tab-chamada">
-            <div class="card p-3 border-top border-5 border-success">
-                <input type="text" id="filtroC" class="form-control mb-3" placeholder="Busca rápida..." onkeyup="filtrarC()">
+            <div class="card p-3 border-top border-5 border-success shadow-sm">
+                <input type="text" id="filtroC" class="form-control mb-3" placeholder="Busca rápida por nome..." onkeyup="filtrarC()">
                 <div class="table-responsive">
                     <table class="table table-sm table-hover align-middle" id="tabC" style="font-size: 0.75rem;">
-                        <thead class="table-dark">
+                        <thead class="table-dark sticky-top">
                             <tr><th>Jovem</th><?php foreach($ultimos_enc as $u): ?><th class="text-center"><?=date('d/m', strtotime($u['data_encontro']))?></th><?php endforeach; ?></tr>
                         </thead>
                         <tbody>
                             <?php foreach($jovens_chamada as $j): $idade_j = calcularIdade($j['data_nascimento'], $j['ano_nascimento']); ?>
                             <tr data-search="<?=mb_strtolower($j['nome'])?>">
-                                <td class="fw-bold text-uppercase"><?=$j['nome']?></td>
+                                <td class="fw-bold text-uppercase ps-2"><?=$j['nome']?></td>
                                 <?php foreach($ultimos_enc as $u): 
                                     $st = $pdo->prepare("SELECT id FROM presencas WHERE jovem_id=? AND encontro_id=?"); $st->execute([$j['id'], $u['id']]);
                                     $has = $st->fetch(); $ativo = ($u['id'] == $enc_id_ativo);
                                 ?>
                                 <td class="text-center">
-                                    <button type="button" class="btn btn-link p-0" <?= $ativo ? "onclick=\"handleCheckin({$j['id']}, {$u['id']}, '{$j['nome']}', '{$idade_j}')\"" : "" ?>>
+                                    <button type="button" class="btn btn-link p-0" <?= $ativo ? "onclick=\"tentarCheckin({$j['id']}, {$u['id']}, '{$j['nome']}', '{$idade_j}', '{$j['telefone']}')\"" : "" ?>>
                                         <i id="icon-<?=$j['id']?>" class="bi <?= $has ? 'bi-check-circle-fill text-success' : 'bi-circle text-light' ?> fs-5"></i>
                                     </button>
                                 </td>
@@ -212,9 +211,12 @@ $jovens_exibicao = $st_ex->fetchAll(PDO::FETCH_ASSOC);
 
         <!-- ABA JOVENS -->
         <div class="tab-pane fade" id="tab-jovens">
-            <!-- FILTRO -->
+            <!-- FILTRO RESTAURADO (TÍTULO + BOTÃO LIMPAR) -->
             <div class="filter-section mb-3 shadow-sm">
-                <h6 class="fw-bold mb-2 text-dark"><i class="bi bi-funnel-fill me-1"></i> FILTRAR JOVENS</h6>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="fw-bold mb-0 text-dark"><i class="bi bi-funnel-fill me-1"></i> FILTRAR JOVENS</h6>
+                    <button class="btn btn-primary btn-sm rounded-pill fw-bold px-3" onclick="window.location.href='gincana.php?tab=jovens'"><i class="bi bi-arrow-clockwise"></i> LIMPAR</button>
+                </div>
                 <form method="GET">
                     <input type="hidden" name="tab" value="jovens">
                     <div class="row g-2">
@@ -228,13 +230,13 @@ $jovens_exibicao = $st_ex->fetchAll(PDO::FETCH_ASSOC);
             <!-- FORMULÁRIO -->
             <div class="card p-3 border-top border-5 border-info shadow-sm mb-4">
                 <h6 class="fw-bold mb-3" id="t_j">Cadastro / Edição</h6>
-                <form method="POST">
+                <form method="POST" onsubmit="return validarCadastro()">
                     <input type="hidden" name="form_acao" value="novo_jovem"><input type="hidden" name="id_jovem_edit" id="id_j_e">
                     <div class="row g-2">
                         <div class="col-8"><label class="label-small">Nome Completo</label><input type="text" name="nome" id="j_n" class="form-control text-uppercase shadow-sm" required></div>
                         <div class="col-4"><label class="label-small">Irmãos?</label><select name="irmaos" id="j_ir" class="form-select shadow-sm"><option value="Não">Não</option><option value="Sim">Sim</option></select></div>
                         <div class="col-7 mt-2"><label class="label-small">Instagram</label><input type="text" name="instagram" id="j_i" class="form-control shadow-sm" placeholder="@"></div>
-                        <div class="col-5 mt-2"><label class="label-small">WhatsApp</label><input type="text" name="telefone" id="j_t" class="form-control shadow-sm" onkeyup="maskFone(this)" placeholder="(99) 99999-9999"></div>
+                        <div class="col-5 mt-2"><label class="label-small">WhatsApp (11 DÍGITOS)</label><input type="text" name="telefone" id="j_t" class="form-control shadow-sm" onkeyup="maskFone(this)" placeholder="(12) 98888-7777"></div>
                         <div class="col-4 mt-2"><label class="label-small">Sexo</label><select name="sexo" id="j_s" class="form-select shadow-sm" required><option value="">Selecione...</option><option value="Masculino">Masculino</option><option value="Feminino">Feminino</option></select></div>
                         <div class="col-5 mt-2"><label class="label-small">Nasc (DD/MM/AAAA)</label><input type="text" name="data_nascimento" id="j_d" class="form-control shadow-sm" onkeyup="maskData(this)" maxlength="10"></div>
                         <div class="col-3 mt-2"><label class="label-small">Ano</label><input type="number" name="ano_nascimento" id="j_a" class="form-control shadow-sm"></div>
@@ -244,22 +246,26 @@ $jovens_exibicao = $st_ex->fetchAll(PDO::FETCH_ASSOC);
                 </form>
             </div>
 
-            <!-- GRID JOVENS CADASTRADOS -->
+            <!-- GRID -->
             <h6 class="fw-bold mb-2 ps-1"><i class="bi bi-people-fill text-primary"></i> Jovens Cadastrados</h6>
             <div class="table-responsive">
                 <table class="table table-sm bg-white border align-middle shadow-sm">
                     <tbody>
-                        <?php foreach($jovens_exibicao as $jv): $id_list = calcularIdade($jv['data_nascimento'], $jv['ano_nascimento']); ?>
+                        <?php foreach($jovens_exibicao as $jv): 
+                            $id_list = calcularIdade($jv['data_nascimento'], $jv['ano_nascimento']);
+                            $invalid = isTelefoneInvalido($jv['telefone']);
+                        ?>
                         <tr>
                             <td class="ps-3 py-2">
-                                <div class="fw-bold text-uppercase small"><?=$jv['nome']?></div>
-                                <small class="text-muted" style="font-size: 0.68rem;">
-                                    <?=$jv['telefone']?> / <?=($jv['data_nascimento'] ? date('d/m/Y', strtotime($jv['data_nascimento'])) : 'N/D')?> / <?=$jv['sexo']?> / <?=$id_list?> ANOS
-                                </small>
+                                <div class="fw-bold text-uppercase small d-flex align-items-center">
+                                    <?=$jv['nome']?>
+                                    <?php if($invalid): ?><i class="bi bi-telephone-x-fill text-danger ms-2 fone-error-icon" title="Número fora do padrão (11 dígitos)"></i><?php endif; ?>
+                                </div>
+                                <small class="text-muted" style="font-size: 0.68rem;"><?=$jv['telefone']?> / <?=($jv['data_nascimento'] ? date('d/m/Y', strtotime($jv['data_nascimento'])) : 'N/D')?> / <?=$jv['sexo']?> / <?=$id_list?> ANOS</small>
                             </td>
                             <td class="text-end pe-3 text-nowrap">
                                 <?php if($pode_checkin): ?>
-                                    <button type="button" class="btn-checkin-lista" onclick="handleCheckin(<?=$jv['id']?>, <?=$enc_id_ativo?>, '<?=$jv['nome']?>', '<?=$id_list?>')">
+                                    <button type="button" class="btn-checkin-lista" onclick="tentarCheckin(<?=$jv['id']?>, <?=$enc_id_ativo?>, '<?=$jv['nome']?>', '<?=$id_list?>', '<?=$jv['telefone']?>')">
                                         <i id="icon-grid-<?=$jv['id']?>" class="bi <?= $jv['presenca_hoje'] ? 'bi-person-check-fill text-success' : 'bi-person-check text-muted' ?>"></i>
                                     </button>
                                 <?php endif; ?>
@@ -276,23 +282,20 @@ $jovens_exibicao = $st_ex->fetchAll(PDO::FETCH_ASSOC);
     </div>
 </div>
 
-<!-- MODAL CONFIRMAÇÃO EXCLUSÃO -->
-<div class="modal fade" id="modalConfirmDel" tabindex="-1"><div class="modal-dialog modal-dialog-centered"><div class="modal-content text-center p-4 border-0 shadow-lg rounded-4">
-    <i class="bi bi-exclamation-triangle text-danger display-1 mb-2"></i>
-    <h4 class="fw-bold">Tem certeza?</h4>
-    <p class="text-muted">Deseja excluir permanentemente o jovem:<br><b id="nomeDel" class="text-dark"></b>?</p>
-    <form method="POST">
-        <input type="hidden" name="form_acao" value="deletar_jovem"><input type="hidden" name="id_jovem" id="idDel">
-        <div class="d-flex gap-2 mt-3">
-            <button type="button" class="btn btn-light border w-100 rounded-pill fw-bold" data-bs-dismiss="modal">CANCELAR</button>
-            <button type="submit" class="btn btn-danger w-100 rounded-pill fw-bold shadow">SIM, EXCLUIR</button>
-        </div>
-    </form>
+<!-- MODAL PRESENTES HOJE -->
+<div class="modal fade" id="modalPresentes" tabindex="-1"><div class="modal-dialog modal-dialog-centered modal-dialog-scrollable"><div class="modal-content border-0 shadow-lg rounded-4">
+    <div class="modal-header border-0 bg-success text-white"><h6 class="modal-title fw-bold">PRESENTES HOJE (<?=$total_pres?>)</h6><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body text-uppercase">
+        <div class="row g-2 mb-3 text-center"><div class="col-6"><div class="badge bg-primary w-100 p-2 shadow-sm">MASC: <?=$stats_presenca_hoje['masc']?></div></div><div class="col-6"><div class="badge bg-danger w-100 p-2 shadow-sm">FEM: <?=$stats_presenca_hoje['fem']?></div></div></div>
+        <?php foreach($lista_p as $lp): $id_p = calcularIdade($lp['data_nascimento'], $lp['ano_nascimento']); ?>
+            <div class="d-flex justify-content-between border-bottom py-2"><span class="fw-bold small"><?=$lp['nome']?></span><small class="text-muted"><b><?=$id_p?> ANOS</b></small></div>
+        <?php endforeach; ?>
+    </div>
 </div></div></div>
 
-<!-- MODAL ANIVERSARIANTES -->
+<!-- MODAL ANIVERSARIANTES (COM DESTAQUE HOJE RESTAURADO) -->
 <div class="modal fade" id="modalNiverEncontro" tabindex="-1"><div class="modal-dialog modal-dialog-centered modal-dialog-scrollable"><div class="modal-content border-0 shadow-lg rounded-4">
-    <div class="modal-header border-0 bg-warning text-dark"><h6 class="modal-title fw-bold"><i class="bi bi-cake2-fill"></i> ANIVERSARIANTES DO ENCONTRO</h6><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-header border-0 bg-warning text-dark"><h6 class="modal-title fw-bold"><i class="bi bi-cake2-fill"></i> ANIVERSARIANTES</h6><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
     <div class="modal-body">
         <div class="d-flex justify-content-between align-items-center mb-3"><small class="text-muted fw-bold">Período: <?=$periodo_texto_pdf?></small><button onclick="exportarNiversPDF()" class="btn btn-danger btn-sm rounded-pill fw-bold">PDF</button></div>
         <?php foreach($aniversariantes_periodo as $ap): 
@@ -302,39 +305,60 @@ $jovens_exibicao = $st_ex->fetchAll(PDO::FETCH_ASSOC);
             <div class="card p-3 mb-2 border-0 shadow-sm <?= $is_hoje ? 'niver-hoje' : 'bg-light' ?>">
                 <?php if($is_hoje): ?><span class="badge-hoje">ANIVERSÁRIO NO DIA DO ENCONTRO!</span><?php endif; ?>
                 <div class="fw-bold text-uppercase small"><?=$ap['nome']?></div>
-                <small class="text-muted">Nasc: <?=$ap['data_completa']?> | Contato: <?=$ap['telefone']?></small>
+                <small class="opacity-75">Nasc: <?=$ap['data_completa']?> | Contato: <?=$ap['telefone']?></small>
                 <div class="text-danger fw-bold small mt-1">NOVA IDADE: <?=$id_n?> ANOS</div>
             </div>
         <?php endforeach; ?>
     </div>
 </div></div></div>
 
-<!-- MODAL PRESENTES -->
-<div class="modal fade" id="modalPresentes" tabindex="-1"><div class="modal-dialog modal-dialog-centered modal-dialog-scrollable"><div class="modal-content border-0 shadow-lg rounded-4">
-    <div class="modal-header border-0 bg-success text-white"><h6 class="modal-title fw-bold">PRESENTES HOJE (<?=$total_pres?>)</h6><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
-    <div class="modal-body text-uppercase">
-        <div class="row g-2 mb-3 text-center"><div class="col-6"><div class="badge bg-primary w-100 p-2 shadow-sm">MASC: <?=$stats_presenca_hoje['masc']?></div></div><div class="col-6"><div class="badge bg-danger w-100 p-2 shadow-sm">FEM: <?=$stats_presenca_hoje['fem']?></div></div></div>
-        <?php foreach($lista_p as $lp): $id_p = calcularIdade($lp['data_nascimento'], $lp['ano_nascimento']); $cor = ($lp['sexo'] == 'Masculino') ? 'text-primary' : 'text-danger'; ?>
-            <div class="d-flex justify-content-between border-bottom py-2"><span class="fw-bold small"><?=$lp['nome']?></span><small class="text-muted"><i class="bi bi-person-fill <?=$cor?>"></i> <b><?=$id_p?> ANOS</b></small></div>
-        <?php endforeach; ?>
-    </div>
+<!-- MODAL SUCESSO CADASTRO (DETALHADO COM NOME) -->
+<div class="modal fade" id="modalSave" tabindex="-1"><div class="modal-dialog modal-dialog-centered text-center"><div class="modal-content p-4 border-0 shadow-lg rounded-4">
+    <i class="bi bi-cloud-check-fill text-info fs-1"></i>
+    <h4 class="fw-bold mt-2">Cadastro Salvo!</h4>
+    <p class="text-muted mb-0">Registro processado para:</p>
+    <h5 id="nomeSave" class="fw-bold text-dark text-uppercase mt-1"></h5>
+    <button class="btn btn-dark w-100 rounded-pill shadow mt-3" data-bs-dismiss="modal">OK</button>
 </div></div></div>
 
-<!-- POP-UPS -->
+<!-- MODAL ERRO TELEFONE (TRAVA) -->
+<div class="modal fade" id="modalErroFone" tabindex="-1"><div class="modal-dialog modal-dialog-centered text-center"><div class="modal-content p-4 border-0 shadow-lg rounded-4"><i class="bi bi-telephone-x text-danger display-1 mb-2"></i><h4 class="fw-bold">Telefone Incorreto!</h4><p class="text-muted" id="msgErroFone"></p><button class="btn btn-danger w-100 rounded-pill fw-bold shadow mt-2" data-bs-dismiss="modal">CORRIGIR AGORA</button></div></div></div>
+
+<!-- MODAL SUCESSO CHECKIN E EXCLUSÃO -->
 <div class="modal fade" id="modalS" tabindex="-1"><div class="modal-dialog modal-dialog-centered text-center"><div class="modal-content p-4 border-0 shadow-lg rounded-4"><i class="bi bi-check-circle-fill text-success fs-1"></i><h4 class="fw-bold mt-2">Check-IN Realizado!</h4><hr><p class="mb-0">Jovem: <br><b id="nomeS" class="text-primary text-uppercase"></b> - <b id="idadeS" class="text-dark"></b> anos</p></div></div></div>
-<div class="modal fade" id="modalNotFound" tabindex="-1"><div class="modal-dialog modal-dialog-centered text-center"><div class="modal-content p-4 border-0 shadow-lg rounded-4"><i class="bi bi-search text-warning display-1 mb-2"></i><h4 class="fw-bold">Nenhum registro!</h4><p class="text-muted">Busca: <b class="text-dark">"<?=htmlspecialchars($f_j)?>"</b> não localizado.</p><button class="btn btn-dark w-100 rounded-pill fw-bold" data-bs-dismiss="modal">VOLTAR</button></div></div></div>
-<div class="modal fade" id="modalDelOk" tabindex="-1"><div class="modal-dialog modal-dialog-centered text-center"><div class="modal-content p-4 border-0 shadow-lg rounded-4"><i class="bi bi-trash-fill text-danger fs-1"></i><h4 class="fw-bold mt-2">Excluído!</h4><p class="text-muted mb-0">Registro removido.</p><button class="btn btn-dark w-100 rounded-pill mt-3 shadow" data-bs-dismiss="modal">OK</button></div></div></div>
-<div class="modal fade" id="modalSave" tabindex="-1"><div class="modal-dialog modal-dialog-centered text-center"><div class="modal-content p-4 border-0 shadow-lg rounded-4"><i class="bi bi-cloud-check-fill text-info fs-1"></i><h4 class="fw-bold mt-2">Cadastro Salvo!</h4><p id="nomeSave" class="fw-bold text-dark text-uppercase"></p><button class="btn btn-dark w-100 rounded-pill shadow" data-bs-dismiss="modal">OK</button></div></div></div>
+<div class="modal fade" id="modalConfirmDel" tabindex="-1"><div class="modal-dialog modal-dialog-centered text-center"><div class="modal-content p-4 border-0 shadow-lg rounded-4"><i class="bi bi-exclamation-triangle text-danger display-1 mb-2"></i><h4 class="fw-bold">Excluir Jovem?</h4><p id="nomeDel" class="fw-bold text-uppercase"></p><form method="POST"><input type="hidden" name="form_acao" value="deletar_jovem"><input type="hidden" name="id_jovem" id="idDel"><div class="d-flex gap-2 mt-3"><button type="button" class="btn btn-light border w-100 rounded-pill" data-bs-dismiss="modal">NÃO</button><button type="submit" class="btn btn-danger w-100 rounded-pill shadow">SIM</button></div></form></div></div></div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    function maskFone(i) { let v = i.value.replace(/\D/g,''); v = v.replace(/^(\d{2})(\d)/g,"($1) $2"); v = v.replace(/(\d)(\d{4})$/,"$1-$2"); i.value = v; }
-    function maskData(i) { let v = i.value.replace(/\D/g,''); if(v.length>2) v=v.substring(0,2)+'/'+v.substring(2); if(v.length>5) v=v.substring(0,5)+'/'+v.substring(5,9); i.value=v; if(v.length==10 && document.getElementById('j_a')) document.getElementById('j_a').value=v.split('/')[2]; }
-    function ajustarBusca() { document.getElementById('f_jovem').value = ''; const t = document.getElementById('f_tipo').value; document.getElementById('f_jovem').placeholder = (t==='data'?'Ex: 25/04':'Busca...'); }
-    function aplicarMascaraBusca(i) { const t = document.getElementById('f_tipo').value; if(t==='telefone') maskFone(i); if(t==='data'){ let v=i.value.replace(/\D/g,''); if(v.length>2) v=v.substring(0,2)+'/'+v.substring(2,4); i.value=v; } }
-    function filtrarC() { let b = document.getElementById("filtroC").value.toLowerCase(); let l = document.getElementById("tabC").getElementsByTagName("tbody")[0].getElementsByTagName("tr"); for(let i=0; i<l.length; i++){ let d = l[i].getAttribute("data-search") || ""; l[i].style.display = (d.includes(b)) ? "" : "none"; } }
+    function maskFone(i) { let v = i.value.replace(/\D/g,''); if (v.length > 11) v = v.substring(0,11); v = v.replace(/^(\d{2})(\d)/g,"($1) $2"); v = v.replace(/(\d)(\d{4})$/,"$1-$2"); i.value = v; }
+    function maskData(i) { let v = i.value.replace(/\D/g,''); if(v.length>2) v=v.substring(0,2)+'/'+v.substring(2); if(v.length>5) v=v.substring(0,5)+'/'+v.substring(5,9); i.value=v; }
+    
+    function ajustarBusca() {
+        const t = document.getElementById('f_tipo').value;
+        document.getElementById('f_jovem').placeholder = (t === 'data') ? "DD/MM" : "Busca...";
+    }
+    function aplicarMascaraBusca(i) {
+        if(document.getElementById('f_tipo').value === 'data') {
+            let v = i.value.replace(/\D/g,''); if(v.length > 2) v = v.substring(0,2) + '/' + v.substring(2,4); i.value = v;
+        } else if(document.getElementById('f_tipo').value === 'telefone') { maskFone(i); }
+    }
 
-    function handleCheckin(jId, eId, nome, idade) {
+    function validarCadastro() {
+        const fone = document.getElementById('j_t').value.replace(/\D/g,'');
+        if(fone.length !== 11) {
+            document.getElementById('msgErroFone').innerText = "O número deve ter 11 dígitos (DDD + 9 números).";
+            new bootstrap.Modal(document.getElementById('modalErroFone')).show();
+            return false;
+        }
+        return true;
+    }
+
+    function tentarCheckin(jId, eId, nome, idade, fone) {
+        if(fone.replace(/\D/g,'').length !== 11) {
+            document.getElementById('msgErroFone').innerText = `O telefone de ${nome.toUpperCase()} está incorreto. Corrija o cadastro para permitir o Check-in.`;
+            new bootstrap.Modal(document.getElementById('modalErroFone')).show();
+            return;
+        }
         const fd = new FormData(); fd.append('form_acao', 'toggle_presenca'); fd.append('j_id', jId); fd.append('e_id', eId);
         fetch('gincana.php', { method: 'POST', body: fd, headers: {'X-Requested-With': 'XMLHttpRequest'} })
         .then(() => {
@@ -342,6 +366,12 @@ $jovens_exibicao = $st_ex->fetchAll(PDO::FETCH_ASSOC);
             new bootstrap.Modal(document.getElementById('modalS')).show();
             setTimeout(() => { location.reload(); }, 1600);
         });
+    }
+
+    function filtrarC() { 
+        let b = document.getElementById("filtroC").value.toLowerCase(); 
+        let l = document.getElementById("tabC").getElementsByTagName("tbody")[0].getElementsByTagName("tr"); 
+        for(let i=0; i<l.length; i++){ let d = l[i].getAttribute("data-search") || ""; l[i].style.display = (d.includes(b)) ? "" : "none"; } 
     }
 
     function povJ(j) { 
@@ -356,27 +386,20 @@ $jovens_exibicao = $st_ex->fetchAll(PDO::FETCH_ASSOC);
     function solicitarExclusao(id, nome) { document.getElementById('idDel').value = id; document.getElementById('nomeDel').innerText = nome; new bootstrap.Modal(document.getElementById('modalConfirmDel')).show(); }
 
     function exportarNiversPDF() {
-        const { jsPDF } = window.jspdf;
-        const doc = new jsPDF();
-        const encHoje = "<?=date('m-d', strtotime($data_enc_atual))?>";
-        doc.setFontSize(18); doc.setTextColor(200, 0, 0); doc.text("ANIVERSARIANTES DA SEMANA - JMM", 14, 15);
-        doc.setFontSize(10); doc.setTextColor(50);
-        doc.text("Tema: <?=$nome_enc_atual?>", 14, 22); doc.text("Período: <?=$periodo_texto_pdf?>", 14, 28);
+        const { jsPDF } = window.jspdf; const doc = new jsPDF();
+        doc.text("ANIVERSARIANTES JMM - <?=$periodo_texto_pdf?>", 14, 15);
         const rows = [];
         <?php foreach($aniversariantes_periodo as $ap): $id_n = (date('Y') - ($ap['ano_nascimento'] ?: date('Y', strtotime($ap['data_nascimento'])))); ?>
-            rows.push({ nome: "<?=$ap['nome']?>", nasc: "<?=$ap['data_completa']?>", tel: "<?=$ap['telefone']?>", idade: "<?=$id_n?> ANOS", isHoje: ("<?=$ap['mes_dia']?>" === encHoje) });
+            rows.push(["<?=$ap['nome']?>", "<?=$ap['data_completa']?>", "<?=$ap['telefone']?>", "<?=$id_n?> ANOS"]);
         <?php endforeach; ?>
-        const tableBody = rows.map(r => [ r.isHoje ? r.nome + "\nANIVERSÁRIO NO DIA DO ENCONTRO!" : r.nome, r.nasc, r.tel, r.idade ]);
-        doc.autoTable({ head: [['NOME', 'NASCIMENTO', 'TELEFONE', 'IDADE NOVA']], body: tableBody, startY: 35, headStyles: { fillColor: [255, 193, 7], textColor: [0,0,0] }, didParseCell: function(data) { if (data.section === 'body' && rows[data.row.index].isHoje) { data.cell.styles.fillColor = [255, 250, 200]; data.cell.styles.fontStyle = 'bold'; } } });
-        doc.save(`Aniversariantes_Semana-<?=$periodo_pdf_nome?>-JMM.pdf`);
+        doc.autoTable({ head: [['NOME', 'DATA', 'TELEFONE', 'IDADE']], body: rows, startY: 25, headStyles: { fillColor: [255, 193, 7], textColor: [0,0,0] } });
+        doc.save("aniversariantes_jmm.pdf");
     }
 
     document.addEventListener("DOMContentLoaded", function() {
         const p = new URLSearchParams(window.location.search);
         if(p.get('tab')) { const b = document.getElementById('tab-' + p.get('tab') + '-btn'); if(b) new bootstrap.Tab(b).show(); }
         if(p.get('saveok')) { document.getElementById('nomeSave').innerText = p.get('saveok'); new bootstrap.Modal(document.getElementById('modalSave')).show(); }
-        if(p.get('delok')) { new bootstrap.Modal(document.getElementById('modalDelOk')).show(); }
-        <?php if($registro_nao_localizado): ?> new bootstrap.Modal(document.getElementById('modalNotFound')).show(); <?php endif; ?>
     });
 </script>
 </body>
